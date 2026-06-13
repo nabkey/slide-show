@@ -1,0 +1,1890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Slideshow</title>
+<style>
+  :root {
+    --bg: #0e0c0a;
+    --ink: #ece5d8;
+    --ink-dim: rgba(236, 229, 216, 0.55);
+    --champagne: #d9b98a;
+    --champagne-deep: #b08d54;
+    --hairline: rgba(236, 229, 216, 0.12);
+    --panel-bg: rgba(22, 19, 15, 0.86);
+    --danger: #d98a7a;
+    --ui-font: "Avenir Next", "Avenir", "Helvetica Neue", sans-serif;
+    --caption-font: "Baskerville", "Palatino", "Georgia", serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: var(--ui-font);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body.idle { cursor: none; }
+
+  /* ---------- Stage ---------- */
+  #stage { position: fixed; inset: 0; background: var(--bg); }
+
+  .layer {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    will-change: opacity, transform;
+  }
+  .layer img, .layer video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  @keyframes kenburns-a { from { transform: scale(1.0); } to { transform: scale(1.075) translate(0.8%, -0.5%); } }
+  @keyframes kenburns-b { from { transform: scale(1.075) translate(-0.8%, 0.5%); } to { transform: scale(1.0); } }
+
+  /* ---------- Atmosphere: vignette + grain ---------- */
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background: radial-gradient(ellipse 130% 110% at 50% 45%, transparent 55%, rgba(0,0,0,0.42) 100%);
+  }
+  #grain {
+    position: fixed; inset: -50%; width: 200%; height: 200%;
+    pointer-events: none; z-index: 6; opacity: 0.05;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+    animation: grain-shift 1.6s steps(4) infinite;
+  }
+  @keyframes grain-shift {
+    0% { transform: translate(0, 0); } 25% { transform: translate(-2%, 1%); }
+    50% { transform: translate(1%, -2%); } 75% { transform: translate(-1%, 2%); }
+    100% { transform: translate(0, 0); }
+  }
+
+  /* ---------- Date caption ---------- */
+  #caption {
+    position: fixed; left: 3.2vw; bottom: 3.6vh; z-index: 10;
+    font-family: var(--caption-font);
+    font-style: italic;
+    font-size: clamp(20px, 2.4vw, 34px);
+    letter-spacing: 0.04em;
+    color: var(--caption-color, var(--ink));
+    text-shadow: 0 1px 14px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.6);
+    opacity: 0;
+    transition: opacity 0.9s ease;
+    pointer-events: none;
+  }
+  #caption.show { opacity: 0.92; }
+  #caption::after {
+    content: "";
+    display: block;
+    width: 38%;
+    height: 1px;
+    margin-top: 7px;
+    background: linear-gradient(90deg, var(--champagne), transparent);
+    opacity: 0.7;
+  }
+
+  /* ---------- Pause badge ---------- */
+  #pauseBadge {
+    position: fixed; top: 4vh; left: 50%; transform: translateX(-50%) translateY(-8px);
+    z-index: 12;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.28em; text-transform: uppercase;
+    color: var(--champagne);
+    background: var(--panel-bg);
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 8px 18px 8px 21px;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  #pauseBadge.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ---------- Gear button ---------- */
+  #gear {
+    position: fixed; top: 22px; right: 22px; z-index: 20;
+    width: 44px; height: 44px;
+    display: grid; place-items: center;
+    background: var(--panel-bg);
+    border: 1px solid var(--hairline);
+    border-radius: 50%;
+    color: var(--ink-dim);
+    cursor: pointer;
+    transition: opacity 0.4s ease, color 0.2s ease, transform 0.5s ease;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  #gear:hover { color: var(--champagne); transform: rotate(40deg); }
+  #gear svg { width: 20px; height: 20px; }
+  body.idle #gear:not(.open) { opacity: 0; pointer-events: none; }
+  body.fs #gear, body.fs #panel { display: none; }
+
+  /* ---------- Settings panel ---------- */
+  #panel {
+    position: fixed; top: 78px; right: 22px; z-index: 19;
+    width: 324px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+    background: var(--panel-bg);
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    padding: 22px 22px 18px;
+    backdrop-filter: blur(20px) saturate(1.1);
+    -webkit-backdrop-filter: blur(20px) saturate(1.1);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.55);
+    opacity: 0; pointer-events: none;
+    transform: translateY(-6px) scale(0.985);
+    transform-origin: top right;
+    transition: opacity 0.22s ease, transform 0.22s ease;
+  }
+  #panel.open { opacity: 1; pointer-events: auto; transform: none; }
+
+  #panel h1 {
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--champagne);
+    margin-bottom: 4px;
+  }
+  #panel .counter {
+    font-family: var(--caption-font); font-style: italic;
+    font-size: 14px; color: var(--ink-dim);
+    margin-bottom: 14px;
+  }
+
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 17px;
+  }
+  .tabs button {
+    flex: 1;
+    background: none; border: none;
+    color: var(--ink-dim);
+    font-family: var(--ui-font);
+    font-size: 10px; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    padding: 8px 2px 9px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color 0.15s;
+  }
+  .tabs button:hover { color: var(--ink); }
+  .tabs button.on { color: var(--champagne); border-bottom-color: var(--champagne); }
+
+  .field { margin-bottom: 17px; }
+  .field > label {
+    display: flex; align-items: baseline; justify-content: space-between;
+    font-size: 10px; font-weight: 600;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--ink-dim);
+    margin-bottom: 8px;
+  }
+  .mini {
+    background: none; border: none;
+    font-family: var(--ui-font);
+    font-size: 9px; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--champagne-deep);
+    cursor: pointer;
+  }
+  .mini:hover { color: var(--champagne); }
+
+  .seg {
+    display: flex;
+    border: 1px solid var(--hairline);
+    border-radius: 9px;
+    overflow: hidden;
+  }
+  .seg button {
+    flex: 1;
+    font-family: var(--ui-font);
+    font-size: 11.5px; font-weight: 500;
+    letter-spacing: 0.02em;
+    padding: 8px 4px;
+    background: transparent;
+    border: none;
+    border-left: 1px solid var(--hairline);
+    color: var(--ink-dim);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .seg button:first-child { border-left: none; }
+  .seg button:hover { color: var(--ink); }
+  .seg button.on {
+    background: var(--champagne);
+    color: #1b150d;
+    font-weight: 600;
+  }
+
+  .durRow { display: flex; align-items: center; gap: 12px; }
+  .durRow output {
+    font-family: var(--caption-font); font-style: italic;
+    font-size: 15px; color: var(--champagne);
+    min-width: 34px; text-align: right;
+  }
+  input[type="range"] {
+    flex: 1; appearance: none; -webkit-appearance: none;
+    height: 2px; border-radius: 2px;
+    background: linear-gradient(90deg, var(--champagne-deep), var(--hairline));
+    outline: none; cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none; -webkit-appearance: none;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: var(--champagne);
+    border: 2px solid #1b150d;
+    box-shadow: 0 0 0 1px var(--champagne-deep);
+  }
+
+  input[type="date"] {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    color: var(--ink);
+    color-scheme: dark;
+    font-family: var(--ui-font);
+    font-size: 12.5px;
+    padding: 8px 10px;
+  }
+
+  /* Typeable date field: free-text input + a calendar button for browsing */
+  .dateField { position: relative; display: flex; gap: 8px; align-items: stretch; }
+  .dfText {
+    flex: 1; min-width: 0;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    color: var(--ink);
+    font-family: var(--ui-font);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+    padding: 9px 10px;
+  }
+  .dfText:focus { outline: none; border-color: var(--champagne-deep); }
+  .dfText.bad { border-color: var(--danger); }
+  .dfCal {
+    flex: 0 0 auto;
+    width: 42px;
+    display: grid; place-items: center;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    color: var(--ink-dim);
+    font-size: 16px; line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .dfCal:hover { color: var(--champagne); border-color: var(--champagne-deep); }
+  /* native picker kept in the DOM (for showPicker) but visually collapsed */
+  .dfNative {
+    position: absolute; right: 0; bottom: 0;
+    width: 1px; height: 1px; padding: 0; margin: 0;
+    border: 0; opacity: 0; pointer-events: none;
+  }
+
+  .btnGhost {
+    width: 100%;
+    padding: 9px;
+    font-family: var(--ui-font);
+    font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--ink-dim);
+    background: transparent;
+    border: 1px solid var(--hairline);
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .btnGhost:hover { color: var(--ink); border-color: rgba(236,229,216,0.35); }
+  .btnDanger { color: var(--danger); border-color: rgba(217,138,122,0.4); }
+  .btnDanger:hover { color: #e8a08f; background: rgba(217,138,122,0.1); border-color: rgba(217,138,122,0.55); }
+
+  #fsBtn {
+    width: 100%;
+    margin-top: 3px;
+    padding: 10px;
+    font-family: var(--ui-font);
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--champagne);
+    background: transparent;
+    border: 1px solid var(--champagne-deep);
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  #fsBtn:hover { background: var(--champagne); color: #1b150d; }
+
+  #panel .hint {
+    margin-top: 14px;
+    font-size: 10.5px;
+    line-height: 1.6;
+    color: var(--ink-dim);
+    border-top: 1px solid var(--hairline);
+    padding-top: 12px;
+  }
+  #panel .hint b { color: var(--ink); font-weight: 600; }
+
+  .fileName {
+    font-size: 11px;
+    color: var(--ink-dim);
+    margin-bottom: 15px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fileName em { color: var(--champagne-deep); font-style: normal; }
+
+  .upStatus {
+    margin-top: 8px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--ink-dim);
+    min-height: 0;
+  }
+
+  /* ---------- Dual trim slider ---------- */
+  .dual { position: relative; height: 28px; }
+  .dual .track {
+    position: absolute; top: 13px; left: 0; right: 0;
+    height: 2px; border-radius: 2px;
+    background: var(--hairline);
+  }
+  .dual .fill {
+    position: absolute; top: 13px; height: 2px;
+    background: var(--champagne-deep);
+  }
+  .dual .h {
+    position: absolute; top: 6px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--champagne);
+    border: 2px solid #1b150d;
+    box-shadow: 0 0 0 1px var(--champagne-deep);
+    transform: translateX(-50%);
+    cursor: ew-resize;
+    touch-action: none;
+  }
+  .trimOut {
+    font-family: var(--caption-font); font-style: italic;
+    font-size: 13px; color: var(--champagne);
+    text-align: right;
+    margin-top: 2px;
+  }
+
+  /* ---------- Hidden grid ---------- */
+  #hiddenGrid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  #hiddenGrid .thumb {
+    position: relative;
+    aspect-ratio: 1;
+    padding: 0;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    overflow: hidden;
+    background: none;
+    cursor: pointer;
+  }
+  #hiddenGrid .thumb img {
+    width: 100%; height: 100%;
+    object-fit: cover; display: block;
+    opacity: 0.65;
+    transition: opacity 0.15s;
+  }
+  #hiddenGrid .thumb:hover img { opacity: 1; }
+  #hiddenGrid .thumb::after {
+    content: "\21A9";
+    position: absolute; right: 4px; bottom: 3px;
+    font-size: 12px; color: var(--champagne);
+    text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  }
+
+  /* ---------- Library overlay ---------- */
+  #library {
+    position: fixed; inset: 0; z-index: 15;
+    display: none;
+    flex-direction: column;
+    background: rgba(11, 9, 7, 0.97);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+  #library.open { display: flex; }
+  .libHead {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 26px;
+    border-bottom: 1px solid var(--hairline);
+    flex-wrap: wrap;
+  }
+  .libHead h2 {
+    font-size: 12px; font-weight: 600;
+    letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--champagne);
+  }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chips button {
+    font-family: var(--ui-font);
+    font-size: 10.5px; font-weight: 500;
+    padding: 6px 13px;
+    border-radius: 999px;
+    border: 1px solid var(--hairline);
+    background: transparent;
+    color: var(--ink-dim);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+  .chips button:hover { color: var(--ink); }
+  .chips button.on { background: var(--champagne); border-color: var(--champagne); color: #1b150d; font-weight: 600; }
+  .chips .chipSettings { margin-left: 10px; border-color: var(--champagne-deep); color: var(--champagne); }
+  .chips .chipSettings.on { background: var(--champagne); }
+  .libCount {
+    margin-left: auto;
+    font-family: var(--caption-font); font-style: italic;
+    font-size: 14px; color: var(--ink-dim);
+  }
+  #libClose {
+    background: none; border: 1px solid var(--hairline); border-radius: 50%;
+    width: 34px; height: 34px;
+    color: var(--ink-dim); font-size: 17px; line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  #libClose:hover { color: var(--ink); border-color: rgba(236,229,216,0.35); }
+
+  #libSettings {
+    display: none;
+    flex: 1;
+    overflow-y: auto;
+    padding: 30px 26px;
+  }
+  #libSettings.show { display: block; }
+  .setWrap { max-width: 460px; margin: 0 auto; }
+  .setWrap > .field { margin-bottom: 26px; }
+  .setWrap label.big {
+    display: block;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--champagne);
+    margin-bottom: 8px;
+  }
+  .setWrap .desc {
+    font-size: 12px; line-height: 1.6; color: var(--ink-dim);
+    margin-bottom: 12px;
+  }
+  .setRow { display: flex; gap: 10px; align-items: center; }
+  .setRow input[type="date"] { flex: 1; max-width: 220px; }
+  .setNote {
+    margin-top: 8px;
+    font-family: var(--caption-font); font-style: italic;
+    font-size: 14px; color: var(--champagne);
+  }
+  .setWrap hr {
+    border: none; border-top: 1px solid var(--hairline);
+    margin: 24px 0;
+  }
+  .swatchRow { display: flex; gap: 10px; flex-wrap: wrap; }
+  .swatch {
+    display: flex; align-items: center; gap: 9px;
+    border: 1px solid var(--hairline);
+    border-radius: 9px;
+    padding: 8px 12px 8px 9px;
+  }
+  .swatch label {
+    font-size: 11px; color: var(--ink-dim);
+    letter-spacing: 0.03em;
+  }
+  .swatch input[type="color"] {
+    appearance: none; -webkit-appearance: none;
+    width: 30px; height: 24px;
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    background: none; padding: 0;
+    cursor: pointer;
+  }
+  .swatch input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
+  .swatch input[type="color"]::-webkit-color-swatch { border: none; border-radius: 4px; }
+  select.setSelect {
+    width: 100%; max-width: 260px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    color: var(--ink);
+    font-family: var(--ui-font);
+    font-size: 13px;
+    padding: 9px 10px;
+    cursor: pointer;
+  }
+  .stylePreview {
+    margin-top: 14px;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 22px 20px;
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0)),
+      var(--preview-bg, #0e0c0a);
+    display: flex; align-items: flex-end; min-height: 90px;
+  }
+  .stylePreview .pvCap {
+    font-family: var(--preview-font, var(--caption-font));
+    font-style: italic;
+    font-size: 26px;
+    color: var(--preview-cap, var(--ink));
+  }
+  .stylePreview .pvCap::after {
+    content: ""; display: block;
+    width: 60%; height: 1px; margin-top: 7px;
+    background: linear-gradient(90deg, var(--preview-accent, var(--champagne)), transparent);
+  }
+
+  #libGrid {
+    flex: 1;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    grid-auto-rows: 172px; /* explicit rows: keeps old engines from squashing tracks to fit */
+    gap: 12px;
+    padding: 20px 26px 30px;
+    align-content: start;
+  }
+  .libCard { height: 172px; }
+  .libCard {
+    position: relative;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    overflow: hidden;
+    background: #15120f;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .libCard:hover { border-color: var(--champagne-deep); transform: translateY(-1px); }
+  .libCard img {
+    width: 100%;
+    height: 122px;
+    object-fit: cover;
+    display: block;
+    background: #0a0806;
+  }
+  .libCard.hiddenItem img { opacity: 0.3; }
+  .libMeta {
+    padding: 7px 10px 9px;
+    font-size: 10px;
+    color: var(--ink-dim);
+    line-height: 1.55;
+  }
+  .libMeta .nm {
+    color: var(--ink);
+    font-size: 10.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .badges { position: absolute; top: 7px; left: 7px; display: flex; gap: 4px; pointer-events: none; }
+  .badge {
+    font-size: 8.5px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 2.5px 7px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.7);
+    color: var(--champagne);
+    border: 1px solid rgba(217, 185, 138, 0.35);
+  }
+  .libHide {
+    position: absolute; top: 7px; right: 7px;
+    font-family: var(--ui-font);
+    font-size: 9px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 4px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--hairline);
+    background: rgba(0, 0, 0, 0.7);
+    color: var(--ink-dim);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+  }
+  .libCard:hover .libHide, .libCard.hiddenItem .libHide { opacity: 1; }
+  .libHide:hover { color: var(--ink); border-color: rgba(236,229,216,0.4); }
+  .libPlay {
+    position: absolute;
+    right: 8px; bottom: 56px;
+    width: 32px; height: 32px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    border: 1px solid rgba(217, 185, 138, 0.45);
+    background: rgba(0, 0, 0, 0.72);
+    color: var(--champagne);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s;
+  }
+  .libCard:hover .libPlay { opacity: 1; }
+  .libPlay:hover { background: var(--champagne); color: #1b150d; border-color: var(--champagne); }
+  .libPlay svg { width: 12px; height: 12px; display: block; margin-left: 1px; }
+
+  /* ---------- Edit modal ---------- */
+  #editModal {
+    position: fixed; inset: 0; z-index: 17;
+    display: none;
+    place-items: center;
+    background: rgba(5, 4, 3, 0.65);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+  }
+  #editModal.open { display: grid; }
+  .emBox {
+    position: relative;
+    width: min(400px, calc(100vw - 40px));
+    max-height: calc(100vh - 60px);
+    overflow-y: auto;
+    background: var(--panel-bg);
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    padding: 20px 20px 16px;
+    box-shadow: 0 26px 80px rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(22px) saturate(1.1);
+    -webkit-backdrop-filter: blur(22px) saturate(1.1);
+  }
+  #emClose {
+    position: absolute; top: 12px; right: 12px; z-index: 1;
+    width: 30px; height: 30px;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--hairline);
+    border-radius: 50%;
+    color: var(--ink-dim);
+    font-size: 15px; line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  #emClose:hover { color: var(--ink); border-color: rgba(236,229,216,0.35); }
+  #emPreview img, #emPreview video {
+    width: 100%;
+    max-height: 260px;
+    object-fit: contain;
+    display: block;
+    border-radius: 10px;
+    border: 1px solid var(--hairline);
+    background: #000;
+    margin-bottom: 14px;
+  }
+  #emBody .fileName { padding-right: 30px; }
+
+  /* ---------- Empty / message state ---------- */
+  #empty {
+    position: fixed; inset: 0; z-index: 8;
+    display: none;
+    place-items: center;
+    text-align: center;
+    background: var(--bg);
+  }
+  #empty .inner { max-width: 460px; padding: 20px; }
+  #empty h2 {
+    font-family: var(--caption-font); font-style: italic; font-weight: 400;
+    font-size: 30px; color: var(--champagne); margin-bottom: 14px;
+  }
+  #empty p { font-size: 14px; line-height: 1.7; color: var(--ink-dim); }
+  #empty code {
+    font-size: 13px; color: var(--ink);
+    background: rgba(255,255,255,0.07);
+    padding: 2px 7px; border-radius: 5px;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div class="layer" id="layerA"></div>
+  <div class="layer" id="layerB"></div>
+</div>
+
+<div id="vignette"></div>
+<div id="grain"></div>
+
+<div id="caption"></div>
+<div id="pauseBadge">Paused</div>
+
+<button id="gear" aria-label="Settings">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3.2"/>
+    <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56h.08a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/>
+  </svg>
+</button>
+
+<div id="panel">
+  <h1>Slideshow</h1>
+  <div class="counter" id="counter">&nbsp;</div>
+
+  <div class="tabs" id="tabs">
+    <button data-t="global" class="on">Show</button>
+    <button data-t="slide">This slide</button>
+    <button data-t="hidden">Hidden<span id="hiddenCount"></span></button>
+  </div>
+
+  <div class="tab" id="tab-global">
+    <div class="field">
+      <label>Show</label>
+      <div class="seg" id="segMedia">
+        <button data-v="photo">Photos</button>
+        <button data-v="video">Live videos</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Seconds per slide</label>
+      <div class="durRow">
+        <input type="range" id="durSlider" min="3" max="20" step="1">
+        <output id="durOut"></output>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Transition</label>
+      <div class="seg" id="segTr">
+        <button data-v="fade">Fade</button>
+        <button data-v="slide">Slide</button>
+        <button data-v="kenburns">Drift</button>
+        <button data-v="none">Cut</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Caption</label>
+      <div class="seg" id="segCap">
+        <button data-v="date">Date</button>
+        <button data-v="age">Age</button>
+        <button data-v="off">Off</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Library</label>
+      <button class="btnGhost" id="libBtn" style="margin-bottom:8px">Browse library&hellip;</button>
+      <button class="btnGhost" id="upBtn">Add photos &amp; videos&hellip;</button>
+      <input type="file" id="upInput" accept=".jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.mp4,.mov,.m4v,.webm" multiple hidden>
+      <button class="btnGhost" id="rescanBtn" style="margin-top:8px">Rescan folder</button>
+      <div class="upStatus" id="upStatus"></div>
+    </div>
+
+    <button id="fsBtn">Enter fullscreen</button>
+
+    <div class="hint">
+      <b>&larr;&thinsp;&rarr;</b> skip &nbsp;&middot;&nbsp; <b>space</b> pause &nbsp;&middot;&nbsp; <b>F</b> fullscreen &nbsp;&middot;&nbsp; <b>L</b> library<br>
+      Settings hide in fullscreen — press <b>esc</b> to get them back.
+    </div>
+  </div>
+
+  <div class="tab" id="tab-slide" hidden></div>
+
+  <div class="tab" id="tab-hidden" hidden></div>
+</div>
+
+<div id="library">
+  <div class="libHead">
+    <h2>Library</h2>
+    <div class="chips" id="libFilters">
+      <button data-f="all" class="on">All</button>
+      <button data-f="photos">Photos</button>
+      <button data-f="live">Live</button>
+      <button data-f="videos">Videos</button>
+      <button data-f="uploads">Uploads</button>
+      <button data-f="hidden">Hidden</button>
+      <button data-f="settings" class="chipSettings">Settings</button>
+    </div>
+    <div class="libCount" id="libCount"></div>
+    <button id="libClose" aria-label="Close">&times;</button>
+  </div>
+  <div id="libGrid"></div>
+  <div id="libSettings"></div>
+</div>
+
+<div id="editModal">
+  <div class="emBox">
+    <button id="emClose" aria-label="Close">&times;</button>
+    <div id="emPreview"></div>
+    <div id="emBody"></div>
+  </div>
+</div>
+
+<div id="empty">
+  <div class="inner">
+    <h2 id="emptyTitle">The projector is off</h2>
+    <p id="emptyBody">Couldn&rsquo;t reach the slideshow server. Double-click <code>Start Slideshow.command</code> in the photo folder (or run <code>bun server.ts</code>), then reload this page.</p>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const $ = id => document.getElementById(id);
+  const layers = [$('layerA'), $('layerB')];
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const src = p => encodeURI('/' + p);
+
+  /* ---------- Typeable date field ---------- */
+  // Returns 'YYYY-MM-DD' for a valid date, '' for empty, or null if unparseable.
+  // Accepts: 2010-06-15 · 2010/6/5 · 6/15/2010 · a bare year · "June 15 2010".
+  function isoParts(y, mo, d) {
+    if (!(mo >= 1 && mo <= 12) || !(d >= 1 && d <= 31)) return null;
+    return `${String(y).padStart(4, '0')}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+  function parseDateInput(str) {
+    str = (str || '').trim();
+    if (!str) return '';
+    let m;
+    if ((m = /^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?$/.exec(str))) return isoParts(+m[1], +m[2], m[3] ? +m[3] : 1);
+    if ((m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(str))) return isoParts(+m[3], +m[1], +m[2]);
+    if ((m = /^(\d{4})$/.exec(str))) return isoParts(+m[1], 1, 1);
+    const t = new Date(str);
+    if (!isNaN(t)) return isoParts(t.getFullYear(), t.getMonth() + 1, t.getDate());
+    return null;
+  }
+  function dateFieldHTML(value) {
+    const v = (value || '').slice(0, 10);
+    return `<div class="dateField">
+      <input type="text" class="dfText" data-e="dfText" placeholder="YYYY-MM-DD"
+             value="${esc(v)}" autocomplete="off" spellcheck="false" inputmode="numeric">
+      <button type="button" class="dfCal" data-e="dfCal" title="Pick from calendar" aria-label="Pick from calendar">&#128197;</button>
+      <input type="date" class="dfNative" data-e="dfNative" value="${esc(v)}" tabindex="-1" aria-hidden="true">
+    </div>`;
+  }
+  // Wires the date field inside `scope`. onCommit(iso) fires with a normalized
+  // 'YYYY-MM-DD' (or '' when allowEmpty and the field is cleared).
+  function wireDateField(scope, onCommit, opts = {}) {
+    const text = scope.querySelector('[data-e="dfText"]');
+    const cal = scope.querySelector('[data-e="dfCal"]');
+    const nat = scope.querySelector('[data-e="dfNative"]');
+    let last = text.value;
+    const commit = raw => {
+      const norm = parseDateInput(raw);
+      text.classList.remove('bad');
+      if (norm === null || (norm === '' && !opts.allowEmpty)) { // invalid -> flag + revert
+        text.classList.add('bad');
+        text.value = last;
+        return;
+      }
+      text.value = norm;
+      nat.value = norm;
+      last = norm;
+      onCommit(norm);
+    };
+    text.addEventListener('change', () => commit(text.value));
+    text.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); commit(text.value); } });
+    cal.addEventListener('click', () => {
+      nat.value = parseDateInput(text.value) || '';
+      if (nat.showPicker) { try { nat.showPicker(); return; } catch (e) {} }
+      nat.focus();
+    });
+    nat.addEventListener('change', () => { if (nat.value) commit(nat.value); });
+  }
+
+  function showEmpty(title, bodyHtml) {
+    $('emptyTitle').textContent = title;
+    if (bodyHtml) $('emptyBody').innerHTML = bodyHtml;
+    $('empty').style.display = 'grid';
+  }
+  const hideEmpty = () => { $('empty').style.display = 'none'; };
+
+  /* ---------- Server data ---------- */
+  async function api(path, body) {
+    const res = await fetch(path, body === undefined ? undefined : {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
+
+  let ALL = [], overrides = {}, serverSettings = {};
+  try {
+    const data = await api('/api/slides');
+    ALL = data.slides;
+    overrides = data.overrides || {};
+    serverSettings = data.settings || {};
+  } catch (e) {
+    showEmpty('The projector is off');
+    return;
+  }
+  if (!ALL.length) {
+    showEmpty('Nothing to show yet', 'No photos found in this folder. Drop some in and click <code>Rescan folder</code> in settings.');
+  }
+
+  /* ---------- Overrides ---------- */
+  const ov = id => overrides[id] || {};
+  function setOv(id, patch) {
+    const o = { ...ov(id) };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined || v === null || v === false) delete o[k];
+      else o[k] = v;
+    }
+    if (Object.keys(o).length) overrides[id] = o; else delete overrides[id];
+    api('/api/override', { id, patch }).catch(() => {});
+  }
+
+  /* ---------- Global settings (stored server-side in slideshow.db) ---------- */
+  const DEFAULTS = {
+    media: 'photo', duration: 7, transition: 'fade', caption: 'date', birthday: '',
+    accent: '#d9b98a', bg: '#0e0c0a', captionColor: '#ece5d8', captionFont: 'Baskerville',
+  };
+  const settings = { ...DEFAULTS };
+  for (const k of Object.keys(DEFAULTS)) {
+    if (serverSettings[k] !== undefined && serverSettings[k] !== '') {
+      settings[k] = k === 'duration' ? parseInt(serverSettings[k], 10) || DEFAULTS.duration : serverSettings[k];
+    }
+  }
+  settings.birthday = serverSettings.birthday || ''; // '' allowed (means "no birthday set")
+  // persist one or more changed keys back to the server (debounced per key is overkill here)
+  const save = (patch) => {
+    if (patch) Object.assign(settings, patch);
+    const body = patch || Object.fromEntries(Object.keys(DEFAULTS).map(k => [k, settings[k]]));
+    api('/api/settings', { patch: body }).catch(() => {});
+  };
+
+  /* ---------- Appearance (fonts must be locally installed — stays offline) ---------- */
+  const CAPTION_FONTS = {
+    'Baskerville':     '"Baskerville", "Palatino", Georgia, serif',
+    'Didot':           '"Didot", "Bodoni 72", "Times New Roman", serif',
+    'Hoefler Text':    '"Hoefler Text", Garamond, Georgia, serif',
+    'Palatino':        '"Palatino", "Palatino Linotype", Georgia, serif',
+    'Georgia':         'Georgia, "Times New Roman", serif',
+    'Optima':          '"Optima", "Segoe UI", Candara, sans-serif',
+    'Futura':          '"Futura", "Century Gothic", sans-serif',
+    'Avenir Next':     '"Avenir Next", "Avenir", "Helvetica Neue", sans-serif',
+    'Snell Roundhand': '"Snell Roundhand", "Apple Chancery", "Brush Script MT", cursive',
+  };
+
+  // darken a #rrggbb color by a factor (0–1) for the deep-accent shade
+  function darken(hex, f) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+    if (!m) return hex;
+    const n = parseInt(m[1], 16);
+    const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => Math.round(v * f));
+    return '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+  }
+
+  function applyStyle() {
+    const r = document.documentElement.style;
+    r.setProperty('--bg', settings.bg);
+    r.setProperty('--champagne', settings.accent);
+    r.setProperty('--champagne-deep', darken(settings.accent, 0.78));
+    r.setProperty('--caption-color', settings.captionColor);
+    r.setProperty('--caption-font', CAPTION_FONTS[settings.captionFont] || CAPTION_FONTS['Baskerville']);
+  }
+  applyStyle();
+
+  /* ---------- Slide list ---------- */
+  let list = [];
+  let idx = -1;
+  let active = 0;
+  let timer = null;
+  let paused = false;
+  let seq = 0;
+  const cur = () => list[idx];
+  const effDate = s => ov(s.id).date || s.d;
+  // cache-bust poster frames so a re-extracted frame shows up immediately
+  const imgSrc = s => src(s.img) + (s.solo && ov(s.id).poster != null ? `?v=${ov(s.id).poster}` : '');
+  const MONTHS = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
+
+  function rebuild() {
+    list = ALL
+      .filter(s => !ov(s.id).hidden)
+      .sort((a, b) => {
+        const da = effDate(a), db = effDate(b);
+        return da < db ? -1 : da > db ? 1 : a.id < b.id ? -1 : 1;
+      });
+    const n = ALL.filter(s => ov(s.id).hidden).length;
+    $('hiddenCount').textContent = n ? ` · ${n}` : '';
+  }
+
+  function rebuildKeeping(slide) {
+    rebuild();
+    const i = slide ? list.indexOf(slide) : -1;
+    if (i >= 0) {
+      idx = i;
+      updateCounter();
+      schedule();
+    } else if (list.length) {
+      show(Math.min(Math.max(idx, 0), list.length - 1), 1);
+    } else {
+      clearTimeout(timer);
+      layers.forEach(clearLayer);
+      layers.forEach(l => l.style.opacity = 0);
+      $('caption').classList.remove('show');
+      showEmpty('All photos are hidden', 'Open settings → the <code>Hidden</code> tab to bring them back.');
+    }
+  }
+
+  /* ---------- Slide engine ---------- */
+  // auto-advance holds while the per-slide editor or the library is open
+  const editing = () =>
+    (panel.classList.contains('open') && activeTab === 'slide') ||
+    library.classList.contains('open');
+
+  function schedule() {
+    clearTimeout(timer);
+    if (!paused && !editing()) timer = setTimeout(() => advance(1), settings.duration * 1000);
+  }
+
+  function preload(i) {
+    if (!list.length) return;
+    const s = list[((i % list.length) + list.length) % list.length];
+    new Image().src = imgSrc(s);
+  }
+
+  function slideUsesVideo(slide) {
+    if (!slide.vid) return false;
+    const m = ov(slide.id).media;
+    if (m === 'photo') return false;
+    if (m === 'video') return true;
+    return settings.media === 'video';
+  }
+
+  function clearLayer(layer) {
+    for (const v of layer.querySelectorAll('video')) {
+      clearInterval(v._trimTimer);
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+    }
+    layer.innerHTML = '';
+  }
+
+  // Resolve a video's playback rate from its per-item speed override.
+  // null/"1" -> 1x; "fit" -> stretch the (trimmed) clip to the slide duration;
+  // numeric string -> that multiplier. Browsers clamp roughly to 0.0625–16x.
+  function videoRate(slide, vidDuration) {
+    const sp = ov(slide.id).speed;
+    if (!sp || sp === '1') return 1;
+    if (sp === 'fit') {
+      const t = ov(slide.id).trim;
+      const clipLen = t ? (t[1] - t[0]) : vidDuration;
+      if (!clipLen || !settings.duration) return 1;
+      return Math.min(16, Math.max(0.0625, clipLen / settings.duration));
+    }
+    const n = parseFloat(sp);
+    return isFinite(n) && n > 0 ? n : 1;
+  }
+
+  function buildMedia(slide) {
+    if (slideUsesVideo(slide)) {
+      const v = document.createElement('video');
+      v.muted = true;
+      v.loop = true;
+      v.autoplay = true;
+      v.playsInline = true;
+      v.src = src(slide.vid);
+      const applyRate = () => { try { v.playbackRate = videoRate(slide, v.duration); } catch (e) {} };
+      v.addEventListener('loadedmetadata', () => {
+        const t = ov(slide.id).trim;
+        if (t) v.currentTime = t[0];
+        applyRate();
+      });
+      // keep playback inside the trim window and keep the rate current (both read
+      // overrides live so editor changes take effect immediately)
+      v._trimTimer = setInterval(() => {
+        applyRate();
+        const t = ov(slide.id).trim;
+        if (!t) return;
+        if (v.currentTime > t[1] || v.currentTime < t[0] - 0.35) v.currentTime = t[0];
+      }, 90);
+      return v;
+    }
+    const img = document.createElement('img');
+    img.src = imgSrc(slide);
+    return img;
+  }
+
+  function show(i, dir) {
+    if (!list.length) return;
+    hideEmpty();
+    i = ((i % list.length) + list.length) % list.length;
+    const mySeq = ++seq;
+    idx = i; // update immediately so rapid skips compound correctly
+    const slide = list[i];
+    const back = layers[1 - active];
+    clearLayer(back);
+    const el = buildMedia(slide);
+    back.appendChild(el);
+
+    const go = () => {
+      if (mySeq !== seq) return;
+      reveal(back, el, dir);
+      updateCaption(slide);
+      updateCounter();
+      maybeRenderSlideTab();
+      preload(i + dir);
+      schedule();
+    };
+
+    if (el.tagName === 'VIDEO') {
+      let started = false;
+      const once = () => { if (!started) { started = true; go(); } };
+      el.addEventListener('loadeddata', once);
+      setTimeout(once, 900); // don't stall the show on a slow video
+    } else if (el.complete) {
+      go();
+    } else {
+      el.onload = go;
+      el.onerror = go; // skip gracefully past unreadable files
+    }
+  }
+
+  function reveal(back, el, dir) {
+    const front = layers[active];
+    const tr = settings.transition;
+    back.style.zIndex = 2;
+    front.style.zIndex = 1;
+
+    back.style.transition = 'none';
+    front.style.transition = 'none';
+    back.style.transform = '';
+
+    if (tr === 'none') {
+      back.style.opacity = 1;
+      front.style.opacity = 0;
+    } else if (tr === 'slide') {
+      back.style.transform = `translateX(${dir * 100}%)`;
+      back.style.opacity = 1;
+      void back.offsetWidth;
+      back.style.transition = 'transform 0.7s cubic-bezier(0.22, 1, 0.3, 1)';
+      front.style.transition = 'transform 0.7s cubic-bezier(0.22, 1, 0.3, 1), opacity 0s linear 0.7s';
+      back.style.transform = 'translateX(0)';
+      front.style.transform = `translateX(${dir * -100}%)`;
+      front.style.opacity = 0;
+    } else { // fade & kenburns crossfade
+      back.style.opacity = 0;
+      void back.offsetWidth;
+      back.style.transition = 'opacity 1s ease';
+      front.style.transition = 'opacity 1s ease';
+      back.style.opacity = 1;
+      front.style.opacity = 0;
+    }
+
+    if (tr === 'kenburns' && el.tagName === 'IMG') {
+      const anim = idx % 2 ? 'kenburns-b' : 'kenburns-a';
+      el.style.animation = `${anim} ${settings.duration + 2}s ease-in-out forwards`;
+    }
+
+    active = 1 - active;
+
+    const retired = front;
+    setTimeout(() => {
+      if (retired !== layers[active]) {
+        clearLayer(retired);
+        retired.style.transform = '';
+      }
+    }, 1100);
+  }
+
+  function advance(dir) { show(idx + dir, dir); }
+
+  /* ---------- Caption ---------- */
+  // Parse the birthday setting ("YYYY-MM-DD") into a local Date, or null if unset.
+  function birthdayDate() {
+    if (!settings.birthday) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(settings.birthday);
+    return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+  }
+
+  function ageText(d) {
+    const bday = birthdayDate();
+    if (!bday) return null; // no birthday configured -> no age caption
+    const date = new Date(d.replace(' ', 'T'));
+    if (isNaN(date) || date < bday) return null;
+    let months = (date.getFullYear() - bday.getFullYear()) * 12 + (date.getMonth() - bday.getMonth());
+    if (date.getDate() < bday.getDate()) months--;
+    if (months < 1) {
+      const days = Math.floor((date - bday) / 86400000);
+      if (days === 0) return 'Just born';
+      if (days < 14) return `${days} day${days === 1 ? '' : 's'} old`;
+      return `${Math.floor(days / 7)} weeks old`;
+    }
+    if (months < 24) return `${months} month${months === 1 ? '' : 's'} old`;
+    return `${Math.floor(months / 12)} years old`;
+  }
+
+  function updateCaption(slide) {
+    const cap = $('caption');
+    const d = effDate(slide);
+    let text = null;
+    if (d && !d.startsWith('9999')) {
+      if (settings.caption === 'date') {
+        const [y, m] = d.split('-');
+        text = `${MONTHS[parseInt(m, 10) - 1]} ${y}`;
+      } else if (settings.caption === 'age') {
+        text = ageText(d);
+      }
+    }
+    cap.textContent = text || '';
+    cap.classList.toggle('show', !!text);
+  }
+
+  function updateCounter() {
+    $('counter').textContent = list.length ? `${idx + 1} of ${list.length}` : 'no photos';
+  }
+
+  /* ---------- Pause ---------- */
+  function setPaused(p) {
+    paused = p;
+    $('pauseBadge').classList.toggle('show', p);
+    if (p) clearTimeout(timer); else schedule();
+  }
+
+  /* ---------- Panel: tabs ---------- */
+  const panel = $('panel'), gear = $('gear');
+  let activeTab = 'global';
+
+  function setTab(name) {
+    activeTab = name;
+    for (const b of $('tabs').children) b.classList.toggle('on', b.dataset.t === name);
+    for (const t of ['global', 'slide', 'hidden']) $('tab-' + t).hidden = t !== name;
+    if (name === 'slide') renderSlideTab();
+    if (name === 'hidden') renderHiddenTab();
+    schedule(); // hold while editing a slide, resume otherwise
+  }
+  $('tabs').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (b) setTab(b.dataset.t);
+  });
+  function maybeRenderSlideTab() {
+    if (panel.classList.contains('open') && activeTab === 'slide') renderSlideTab();
+  }
+
+  /* ---------- Panel: global tab ---------- */
+  function bindSeg(elId, key, onChange) {
+    const seg = $(elId);
+    const sync = () => {
+      for (const b of seg.children) b.classList.toggle('on', b.dataset.v === settings[key]);
+    };
+    seg.addEventListener('click', e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      settings[key] = b.dataset.v;
+      save();
+      sync();
+      if (onChange) onChange();
+    });
+    sync();
+  }
+
+  bindSeg('segMedia', 'media', () => show(idx, 1));
+  bindSeg('segTr', 'transition');
+  bindSeg('segCap', 'caption', () => cur() && updateCaption(cur()));
+
+  const slider = $('durSlider'), durOut = $('durOut');
+  slider.value = settings.duration;
+  durOut.textContent = settings.duration + 's';
+  slider.addEventListener('input', () => {
+    settings.duration = parseInt(slider.value, 10);
+    durOut.textContent = settings.duration + 's';
+    save();
+    schedule();
+  });
+
+  /* ---------- Panel: uploads & rescan ---------- */
+  async function refreshFromServer() {
+    const before = cur();
+    const data = await api('/api/slides');
+    ALL = data.slides;
+    overrides = data.overrides || {};
+    const match = before && ALL.find(s => s.id === before.id);
+    rebuildKeeping(match || null);
+    if (!match && list.length && idx < 0) show(0, 1);
+  }
+
+  $('upBtn').addEventListener('click', () => $('upInput').click());
+  $('upInput').addEventListener('change', async () => {
+    const files = [...$('upInput').files];
+    $('upInput').value = '';
+    if (!files.length) return;
+    const status = $('upStatus');
+    let added = 0;
+    let firstNewId = null;
+    const failed = [];
+    for (const [k, f] of files.entries()) {
+      status.textContent = `Uploading ${k + 1} of ${files.length}…`;
+      try {
+        const res = await fetch('/api/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+        let j;
+        try { j = await res.json(); } catch (e) { j = { ok: false, error: `server said ${res.status}` }; }
+        if (j.ok) { added++; firstNewId = firstNewId ?? j.slide?.id; }
+        else failed.push(`${f.name} (${j.error || 'failed'})`);
+      } catch (e) {
+        failed.push(`${f.name} (network error — file may be too large)`);
+      }
+    }
+    await refreshFromServer();
+    // jump to the first new slide so it's obvious where it landed
+    const t = firstNewId ? list.findIndex(s => s.id === firstNewId) : -1;
+    if (t >= 0) show(t, 1);
+    status.textContent = `Added ${added} file${added === 1 ? '' : 's'} to uploads/` +
+      (t >= 0 ? ` — now showing it (slide ${t + 1} of ${list.length}).` : '.') +
+      (failed.length ? ` Failed: ${failed.join(', ')}` : '');
+  });
+
+  $('rescanBtn').addEventListener('click', async () => {
+    $('upStatus').textContent = 'Rescanning…';
+    const r = await api('/api/rescan', {});
+    await refreshFromServer();
+    $('upStatus').textContent = `Folder rescanned — ${r.count} slides.`;
+  });
+
+  /* ---------- Panel: this-slide tab ---------- */
+  function dualSlider(el, min, max, vals, onInput, onCommit) {
+    el.classList.add('dual');
+    el.innerHTML = '<div class="track"></div><div class="fill"></div><div class="h"></div><div class="h"></div>';
+    const fill = el.children[1];
+    const hs = [el.children[2], el.children[3]];
+    const pct = v => ((v - min) / (max - min)) * 100;
+    const render = () => {
+      hs[0].style.left = pct(vals[0]) + '%';
+      hs[1].style.left = pct(vals[1]) + '%';
+      fill.style.left = pct(vals[0]) + '%';
+      fill.style.width = (pct(vals[1]) - pct(vals[0])) + '%';
+    };
+    render();
+    hs.forEach((h, hi) => h.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      try { h.setPointerCapture(e.pointerId); } catch (err) {}
+      let moved = false;
+      const move = ev => {
+        moved = true;
+        const r = el.getBoundingClientRect();
+        let v = min + ((ev.clientX - r.left) / r.width) * (max - min);
+        v = Math.max(min, Math.min(max, v));
+        if (hi === 0) vals[0] = Math.min(v, vals[1] - 0.1);
+        else vals[1] = Math.max(v, vals[0] + 0.1);
+        render();
+        onInput(vals, hi);
+      };
+      const up = () => {
+        h.removeEventListener('pointermove', move);
+        h.removeEventListener('pointerup', up);
+        if (moved) onCommit(vals);
+      };
+      h.addEventListener('pointermove', move);
+      h.addEventListener('pointerup', up);
+    }));
+  }
+
+  function videoDuration(vidPath) {
+    return new Promise(resolve => {
+      const t = document.createElement('video');
+      t.preload = 'metadata';
+      t.src = src(vidPath);
+      t.onloadedmetadata = () => resolve(t.duration);
+      t.onerror = () => resolve(3);
+    });
+  }
+
+  // Shared per-item editor, rendered into either the panel's "This slide"
+  // tab (ctx.modal = false) or the library's edit modal (ctx.modal = true).
+  // All lookups are box-scoped (data-e attributes) so both can coexist.
+  const editorTokens = new WeakMap();
+  async function renderEditor(box, s, ctx) {
+    const token = (editorTokens.get(box) || 0) + 1;
+    editorTokens.set(box, token);
+    if (!s) {
+      box.innerHTML = '<div class="hint" style="border:none;margin:0;padding:0">No photo on screen.</div>';
+      return;
+    }
+    const q = name => box.querySelector(`[data-e="${name}"]`);
+    const o = ov(s.id);
+    const isUpload = s.id.startsWith('uploads/');
+    const isCurrent = () => !!cur() && cur().id === s.id;
+    const rerender = () => renderEditor(box, s, ctx);
+    const refreshLibrary = () => { if (library.classList.contains('open')) renderLibrary(); };
+
+    box.innerHTML = `
+      <div class="fileName" title="${esc(s.id)}">${esc(s.id)}${isUpload ? ' <em>&middot; upload</em>' : ''}${s.solo ? ' <em>&middot; video</em>' : s.vid ? ' <em>&middot; live</em>' : ''}</div>
+      <div class="field">
+        <label>Date${o.date ? ' <button class="mini" data-e="dateReset">reset</button>' : ''}</label>
+        ${dateFieldHTML(effDate(s).slice(0, 10))}
+      </div>
+      ${s.vid ? `
+      <div class="field">
+        <label>Media for this slide</label>
+        <div class="seg" data-e="segMedia">
+          <button data-v="auto">Auto</button>
+          <button data-v="photo">Photo</button>
+          <button data-v="video">Video</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Trim clip${o.trim ? ' <button class="mini" data-e="trimReset">reset</button>' : ''}</label>
+        <div data-e="trimSlider"></div>
+        <div class="trimOut" data-e="trimOut"></div>
+      </div>
+      <div class="field">
+        <label>Playback speed</label>
+        <div class="seg" data-e="segSpeed">
+          <button data-v="0.5">&frac12;&times;</button>
+          <button data-v="1">1&times;</button>
+          <button data-v="2">2&times;</button>
+          <button data-v="fit">Fit</button>
+        </div>
+      </div>` : ''}
+      ${s.solo ? `
+      <div class="field">
+        <label>Still frame <span style="text-transform:none;letter-spacing:0">used in photo mode</span></label>
+        <video data-e="frameVid" muted playsinline preload="auto"
+               style="width:100%;border-radius:8px;border:1px solid var(--hairline);margin-bottom:8px;display:block"></video>
+        <div class="durRow">
+          <input type="range" data-e="frameSlider" min="0" step="0.05">
+          <output data-e="frameOut"></output>
+        </div>
+        <button class="btnGhost" data-e="frameSet" style="margin-top:8px">Use this frame</button>
+      </div>` : ''}
+      <button class="btnGhost btnDanger" data-e="hideBtn">${ctx.modal && o.hidden ? 'Restore to show' : 'Hide from show'}</button>
+      ${isUpload ? '<button class="btnGhost btnDanger" data-e="removeBtn" style="margin-top:8px">Remove upload</button>' : ''}
+    `;
+
+    const afterDateChange = () => {
+      rebuildKeeping(isCurrent() ? s : cur());
+      if (isCurrent()) updateCaption(s);
+      refreshLibrary();
+      rerender();
+    };
+    wireDateField(box, norm => {
+      setOv(s.id, { date: norm + ' 12:00:00' });
+      afterDateChange();
+    });
+    const dateReset = q('dateReset');
+    if (dateReset) dateReset.addEventListener('click', () => {
+      setOv(s.id, { date: null });
+      afterDateChange();
+    });
+
+    q('hideBtn').addEventListener('click', () => {
+      if (ctx.modal) {
+        setOv(s.id, { hidden: o.hidden ? null : true });
+        rebuildKeeping(cur());
+        if (idx < 0 && list.length) show(0, 1);
+        refreshLibrary();
+        rerender();
+      } else {
+        setOv(s.id, { hidden: true });
+        rebuildKeeping(null);
+      }
+    });
+
+    const removeBtn = q('removeBtn');
+    if (removeBtn) removeBtn.addEventListener('click', async () => {
+      await api('/api/remove-upload', { id: s.id });
+      await refreshFromServer();
+      if (ctx.modal) { closeEditor(); refreshLibrary(); }
+    });
+
+    if (s.vid) {
+      const seg = q('segMedia');
+      const mode = () => ov(s.id).media || 'auto';
+      const sync = () => {
+        for (const b of seg.children) b.classList.toggle('on', b.dataset.v === mode());
+      };
+      sync();
+      seg.addEventListener('click', e => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        setOv(s.id, { media: b.dataset.v === 'auto' ? null : b.dataset.v });
+        sync();
+        if (isCurrent()) show(idx, 1); // re-render the slide with the new media choice
+      });
+
+      // playback speed: ½× · 1× · 2× · Fit (applied live by the video's rate timer)
+      const segSpeed = q('segSpeed');
+      const speedVal = () => ov(s.id).speed || '1';
+      const speedSync = () => {
+        for (const b of segSpeed.children) b.classList.toggle('on', b.dataset.v === speedVal());
+      };
+      speedSync();
+      segSpeed.addEventListener('click', e => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        setOv(s.id, { speed: b.dataset.v === '1' ? null : b.dataset.v });
+        speedSync();
+        // also nudge the modal preview, which isn't governed by the stage rate timer
+        const pv = ctx.modal ? $('emPreview').querySelector('video') : null;
+        if (pv) { try { pv.playbackRate = videoRate(s, pv.duration); } catch (e) {} }
+      });
+
+      const dur = await videoDuration(s.vid);
+      if (editorTokens.get(box) !== token) return;
+      // scrub target: the modal's own preview video, or the stage video
+      const scrubVid = () => ctx.modal
+        ? ($('emPreview').querySelector('video') || q('frameVid'))
+        : layers[active].querySelector('video');
+      const trim = o.trim ? [...o.trim] : [0, dur];
+      const out = q('trimOut');
+      const fmtTrim = v => `${v[0].toFixed(1)}s – ${v[1].toFixed(1)}s`;
+      out.textContent = fmtTrim(trim) + (o.trim ? '' : ' (full clip)');
+      dualSlider(q('trimSlider'), 0, dur, trim,
+        (v, hi) => {
+          out.textContent = fmtTrim(v);
+          const tv = scrubVid();
+          if (tv) tv.currentTime = v[hi]; // scrub feedback
+        },
+        v => {
+          const full = v[0] <= 0.05 && v[1] >= dur - 0.05;
+          setOv(s.id, { trim: full ? null : [Math.round(v[0] * 10) / 10, Math.round(v[1] * 10) / 10] });
+          rerender();
+        });
+      const trimReset = q('trimReset');
+      if (trimReset) trimReset.addEventListener('click', () => {
+        setOv(s.id, { trim: null });
+        rerender();
+      });
+
+      if (s.solo) {
+        const fv = q('frameVid'), fs = q('frameSlider'), fo = q('frameOut'), fb = q('frameSet');
+        fv.src = src(s.vid);
+        fs.max = dur;
+        const t0 = ov(s.id).poster ?? Math.round((dur / 2) * 10) / 10;
+        fs.value = t0;
+        fo.textContent = t0.toFixed(1) + 's';
+        fv.addEventListener('loadedmetadata', () => { fv.currentTime = t0; });
+        fs.addEventListener('input', () => {
+          fv.currentTime = parseFloat(fs.value);
+          fo.textContent = parseFloat(fs.value).toFixed(1) + 's';
+        });
+        fb.addEventListener('click', async () => {
+          fb.textContent = 'Saving frame…';
+          const time = Math.round(parseFloat(fs.value) * 100) / 100;
+          const r = await api('/api/poster', { id: s.id, time });
+          if (r.ok) {
+            // mirror locally so imgSrc cache-busts and the stage refreshes
+            overrides[s.id] = { ...ov(s.id), poster: time };
+            if (isCurrent() && !slideUsesVideo(s)) show(idx, 1);
+            refreshLibrary();
+            fb.textContent = 'Frame saved';
+            setTimeout(() => { if (q('frameSet')) q('frameSet').textContent = 'Use this frame'; }, 1500);
+          } else {
+            fb.textContent = r.error || 'Failed';
+          }
+        });
+      }
+    }
+  }
+
+  function renderSlideTab() { renderEditor($('tab-slide'), cur(), { modal: false }); }
+
+  /* ---------- Library edit modal ---------- */
+  const editModal = $('editModal');
+
+  function openEditor(s) {
+    const prev = $('emPreview');
+    prev.innerHTML = '';
+    if (s.vid && !s.solo) {
+      // live photo: preview the clip (solo videos preview via the frame picker)
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.autoplay = true; v.loop = true;
+      v.src = src(s.vid);
+      v.addEventListener('loadedmetadata', () => { try { v.playbackRate = videoRate(s, v.duration); } catch (e) {} });
+      prev.appendChild(v);
+    } else if (!s.vid) {
+      const im = document.createElement('img');
+      im.src = imgSrc(s);
+      prev.appendChild(im);
+    }
+    renderEditor($('emBody'), s, { modal: true });
+    editModal.classList.add('open');
+  }
+
+  function closeEditor() {
+    editModal.classList.remove('open');
+    const v = $('emPreview').querySelector('video');
+    if (v) v.pause();
+    $('emPreview').innerHTML = '';
+    $('emBody').innerHTML = '';
+  }
+
+  $('emClose').addEventListener('click', closeEditor);
+  editModal.addEventListener('click', e => {
+    e.stopPropagation();
+    if (e.target === editModal) closeEditor();
+  });
+
+  /* ---------- Panel: hidden tab ---------- */
+  function renderHiddenTab() {
+    const box = $('tab-hidden');
+    const hid = ALL.filter(s => ov(s.id).hidden);
+    if (!hid.length) {
+      box.innerHTML = '<div class="hint" style="border:none;margin:0;padding:0">Nothing hidden. The hide button lives in the <b>This slide</b> tab.</div>';
+      return;
+    }
+    box.innerHTML = `
+      <div id="hiddenGrid">${hid.map(s =>
+        `<button class="thumb" data-id="${esc(s.id)}" title="${esc(s.id)}"><img loading="lazy" src="${esc(imgSrc(s))}"></button>`
+      ).join('')}</div>
+      <button class="btnGhost" id="unhideAll">Unhide all (${hid.length})</button>
+    `;
+    $('hiddenGrid').addEventListener('click', e => {
+      const b = e.target.closest('.thumb');
+      if (!b) return;
+      setOv(b.dataset.id, { hidden: null });
+      rebuildKeeping(cur());
+      if (idx < 0 && list.length) show(0, 1);
+      renderHiddenTab();
+    });
+    $('unhideAll').addEventListener('click', () => {
+      for (const s of hid) setOv(s.id, { hidden: null });
+      rebuildKeeping(cur());
+      if (idx < 0 && list.length) show(0, 1);
+      renderHiddenTab();
+    });
+  }
+
+  /* ---------- Library overlay ---------- */
+  const library = $('library');
+  let libFilter = 'all';
+
+  function libItems() {
+    const sorted = [...ALL].sort((a, b) => {
+      const da = effDate(a), db = effDate(b);
+      return da < db ? -1 : da > db ? 1 : a.id < b.id ? -1 : 1;
+    });
+    return sorted.filter(s => {
+      const o = ov(s.id);
+      switch (libFilter) {
+        case 'photos': return !s.vid;
+        case 'live': return !!s.vid && !s.solo;
+        case 'videos': return !!s.solo;
+        case 'uploads': return s.id.startsWith('uploads/');
+        case 'hidden': return !!o.hidden;
+        default: return true;
+      }
+    });
+  }
+
+  function renderLibrary() {
+    // "Settings" is a special view, not a content filter
+    const settingsMode = libFilter === 'settings';
+    $('libGrid').style.display = settingsMode ? 'none' : '';
+    $('libSettings').classList.toggle('show', settingsMode);
+    if (settingsMode) { renderLibSettings(); $('libCount').textContent = ''; return; }
+
+    const items = libItems();
+    $('libCount').textContent = `${items.length} item${items.length === 1 ? '' : 's'}`;
+    $('libGrid').innerHTML = items.map(s => {
+      const o = ov(s.id);
+      const badges = [
+        s.solo ? 'video' : s.vid ? 'live' : null,
+        s.id.startsWith('uploads/') ? 'upload' : null,
+        o.hidden ? 'hidden' : null,
+      ].filter(Boolean).map(b => `<span class="badge">${b}</span>`).join('');
+      const v = o.poster != null ? `&v=${o.poster}` : '';
+      return `<div class="libCard${o.hidden ? ' hiddenItem' : ''}" data-id="${esc(s.id)}">
+        <img loading="lazy" src="/api/thumb?id=${encodeURIComponent(s.id)}${v}" alt="">
+        <div class="badges">${badges}</div>
+        <button class="libHide" data-id="${esc(s.id)}">${o.hidden ? 'Show' : 'Hide'}</button>
+        <button class="libPlay" data-id="${esc(s.id)}" title="Start the show here">
+          <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 1.2v9.6L10.5 6z"/></svg>
+        </button>
+        <div class="libMeta"><div class="nm">${esc(s.id.replace(/^uploads\//, ''))}</div>${effDate(s).slice(0, 10)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Global show settings (stored in slideshow.db) live here.
+  function renderLibSettings() {
+    const box = $('libSettings');
+    const newest = ALL.length
+      ? [...ALL].sort((a, b) => effDate(a) < effDate(b) ? 1 : -1)[0]
+      : null;
+    box.innerHTML = `
+      <div class="setWrap">
+        <div class="field">
+          <label class="big">Birthday for &ldquo;Age&rdquo; captions${settings.birthday ? ' <button class="mini" data-e="bdayReset">clear</button>' : ''}</label>
+          <div class="desc">
+            When the caption style is set to <b>Age</b> (gear menu &rarr; Caption), each
+            slide is labelled with how old the subject was — counted from this date.
+            Leave it empty if you&rsquo;re not using age captions.
+          </div>
+          <div class="setRow" style="max-width:260px">
+            ${dateFieldHTML((settings.birthday || '').slice(0, 10))}
+          </div>
+          <div class="setNote" data-e="bdayNote"></div>
+        </div>
+
+        <hr>
+
+        <div class="field">
+          <label class="big">Appearance</label>
+          <div class="desc">Colors and the caption typeface. Changes apply to the
+            slideshow immediately.</div>
+          <div class="swatchRow">
+            <div class="swatch"><input type="color" data-e="cAccent" value="${esc(settings.accent)}"><label>Accent</label></div>
+            <div class="swatch"><input type="color" data-e="cBg" value="${esc(settings.bg)}"><label>Background</label></div>
+            <div class="swatch"><input type="color" data-e="cCap" value="${esc(settings.captionColor)}"><label>Caption text</label></div>
+          </div>
+          <div style="margin-top:14px">
+            <label class="big" style="font-size:10px;color:var(--ink-dim)">Caption font</label>
+            <select class="setSelect" data-e="fontSel">
+              ${Object.keys(CAPTION_FONTS).map(f =>
+                `<option value="${esc(f)}"${f === settings.captionFont ? ' selected' : ''} style="font-family:${CAPTION_FONTS[f]}">${esc(f)}</option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="stylePreview" data-e="preview">
+            <div class="pvCap">${newest ? esc(ageText(effDate(newest)) || (MONTHS[+effDate(newest).slice(5,7)-1] + ' ' + effDate(newest).slice(0,4))) : 'October 2018'}</div>
+          </div>
+          <button class="btnGhost" data-e="styleReset" style="margin-top:12px;max-width:200px">Reset to defaults</button>
+        </div>
+      </div>
+    `;
+    const note = box.querySelector('[data-e="bdayNote"]');
+    const refreshNote = () => {
+      if (!settings.birthday) { note.textContent = ''; return; }
+      note.textContent = newest
+        ? `Newest photo (${effDate(newest).slice(0, 10)}) would read: “${ageText(effDate(newest)) || '—'}”.`
+        : '';
+    };
+    refreshNote();
+
+    wireDateField(box, norm => {
+      save({ birthday: norm });
+      if (cur()) updateCaption(cur());
+      renderLibSettings();
+    }, { allowEmpty: true });
+    const reset = box.querySelector('[data-e="bdayReset"]');
+    if (reset) reset.addEventListener('click', () => {
+      save({ birthday: '' });
+      if (cur()) updateCaption(cur());
+      renderLibSettings();
+    });
+
+    // --- appearance: live-apply, persist, and update the local preview ---
+    const preview = box.querySelector('[data-e="preview"]');
+    const syncPreview = () => {
+      preview.style.setProperty('--preview-bg', settings.bg);
+      preview.style.setProperty('--preview-accent', settings.accent);
+      preview.style.setProperty('--preview-cap', settings.captionColor);
+      preview.style.setProperty('--preview-font', CAPTION_FONTS[settings.captionFont] || '');
+    };
+    syncPreview();
+    const onStyle = (key, val) => { save({ [key]: val }); applyStyle(); syncPreview(); };
+    box.querySelector('[data-e="cAccent"]').addEventListener('input', e => onStyle('accent', e.target.value));
+    box.querySelector('[data-e="cBg"]').addEventListener('input', e => onStyle('bg', e.target.value));
+    box.querySelector('[data-e="cCap"]').addEventListener('input', e => onStyle('captionColor', e.target.value));
+    box.querySelector('[data-e="fontSel"]').addEventListener('change', e => onStyle('captionFont', e.target.value));
+    box.querySelector('[data-e="styleReset"]').addEventListener('click', () => {
+      save({ accent: DEFAULTS.accent, bg: DEFAULTS.bg, captionColor: DEFAULTS.captionColor, captionFont: DEFAULTS.captionFont });
+      applyStyle();
+      renderLibSettings();
+    });
+  }
+
+  function openLibrary() { renderLibrary(); library.classList.add('open'); togglePanel(false); schedule(); }
+  function closeLibrary() { library.classList.remove('open'); schedule(); }
+
+  $('libBtn').addEventListener('click', openLibrary);
+  $('libClose').addEventListener('click', closeLibrary);
+  library.addEventListener('click', e => e.stopPropagation()); // don't drive the show behind the overlay
+
+  $('libFilters').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    libFilter = b.dataset.f;
+    for (const c of $('libFilters').children) c.classList.toggle('on', c === b);
+    renderLibrary();
+  });
+
+  $('libGrid').addEventListener('click', e => {
+    const hideBtn = e.target.closest('.libHide');
+    if (hideBtn) {
+      const id = hideBtn.dataset.id;
+      setOv(id, { hidden: ov(id).hidden ? null : true });
+      rebuildKeeping(cur());
+      if (idx < 0 && list.length) show(0, 1);
+      renderLibrary();
+      return;
+    }
+    const playBtn = e.target.closest('.libPlay');
+    if (playBtn) {
+      const id = playBtn.dataset.id;
+      if (ov(id).hidden) { setOv(id, { hidden: null }); rebuildKeeping(cur()); } // playing a hidden item restores it
+      const t = list.findIndex(s => s.id === id);
+      if (t >= 0) { closeLibrary(); show(t, 1); }
+      return;
+    }
+    const card = e.target.closest('.libCard');
+    if (!card) return;
+    const slide = ALL.find(s => s.id === card.dataset.id);
+    if (slide) openEditor(slide); // default action: edit
+  });
+
+  /* ---------- Panel open/close ---------- */
+  function togglePanel(force) {
+    const open = force !== undefined ? force : !panel.classList.contains('open');
+    panel.classList.toggle('open', open);
+    gear.classList.toggle('open', open);
+    if (open && activeTab === 'slide') renderSlideTab();
+    if (open && activeTab === 'hidden') renderHiddenTab();
+    schedule(); // hold while editing a slide, resume otherwise
+  }
+  gear.addEventListener('click', e => { e.stopPropagation(); gear.blur(); togglePanel(); });
+  panel.addEventListener('click', e => e.stopPropagation());
+
+  /* ---------- Fullscreen ---------- */
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen();
+  }
+  $('fsBtn').addEventListener('click', toggleFullscreen);
+  document.addEventListener('fullscreenchange', () => {
+    const fs = !!document.fullscreenElement;
+    document.body.classList.toggle('fs', fs);
+    if (fs) togglePanel(false);
+  });
+
+  /* ---------- Input ---------- */
+  document.addEventListener('keydown', e => {
+    const typing = e.target instanceof Element && e.target.matches('input, textarea, select');
+    if (e.target instanceof Element && e.target.closest('#panel')) return; // typing/adjusting in the panel
+    if (editModal.classList.contains('open')) {
+      if (e.key === 'Escape') closeEditor();
+      return;
+    }
+    if (library.classList.contains('open')) {
+      if (e.key === 'Escape') closeLibrary();
+      else if ((e.key === 'l' || e.key === 'L') && !typing) closeLibrary();
+      return;
+    }
+    if (typing) return; // don't let shortcuts fire while editing a field
+    if (e.key === 'ArrowRight') advance(1);
+    else if (e.key === 'ArrowLeft') advance(-1);
+    else if (e.key === ' ') { e.preventDefault(); setPaused(!paused); }
+    else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    else if (e.key === 'l' || e.key === 'L') openLibrary();
+  });
+
+  document.addEventListener('click', e => {
+    if (panel.classList.contains('open')) { togglePanel(false); return; }
+    advance(e.clientX < window.innerWidth * 0.3 ? -1 : 1);
+  });
+
+  /* ---------- Idle cursor/UI hiding ---------- */
+  let idleTimer = null;
+  function wake() {
+    document.body.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => document.body.classList.add('idle'), 3000);
+  }
+  document.addEventListener('mousemove', wake);
+  wake();
+
+  /* ---------- Go ---------- */
+  rebuild();
+  if (list.length) show(0, 1);
+  else if (ALL.length) showEmpty('All photos are hidden', 'Open settings → the <code>Hidden</code> tab to bring them back.');
+  updateCounter();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+# ─── Never commit anyone's photos, videos, or generated state ───
+# This is a private slideshow app; only the source files belong in git.
+
+# Source / original media dropped into this folder (matched case-insensitively)
+*.[Jj][Pp][Gg]
+*.[Jj][Pp][Ee][Gg]
+*.[Pp][Nn][Gg]
+*.[Gg][Ii][Ff]
+*.[Ww][Ee][Bb][Pp]
+*.[Hh][Ee][Ii][Cc]
+*.[Hh][Ee][Ii][Ff]
+*.[Mm][Pp]4
+*.[Mm][Oo][Vv]
+*.[Mm]4[Vv]
+*.[Ww][Ee][Bb][Mm]
+
+# Uploaded media and server-generated derivatives (JPEGs, posters, thumbnails)
+/uploads/
+/_converted/
+
+# SQLite database (per-slide overrides + EXIF cache) and its sidecar files
+slideshow.db
+slideshow.db-wal
+slideshow.db-shm
+
+# macOS cruft
+.DS_Store
