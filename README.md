@@ -96,20 +96,25 @@ After that it's cached, so restarts are instant.
 > copy `slideshow.db` along with your photos to preserve dates, trims, hidden
 > items, etc. It's safe to delete `_converted/` anytime — it regenerates.
 
-## Global settings
+## Settings
 
-Open the **Library** (press **L**) and click the **Settings** chip. These options
-are stored in `slideshow.db` (not in the code), so they travel with your show and
+Everything lives behind the **gear icon** (top-right), in four tabs. All of it is
+stored in `slideshow.db` (not in the code), so it travels with your show and
 there's nothing personal hardcoded:
 
-- **Birthday** — the reference date for the **Age** caption. Leave it empty if you
-  aren't using age captions.
-- **Appearance** — accent color, background color, caption color, and the caption
-  font. Changes apply live. (Fonts are drawn from those installed on the machine,
-  so it stays fully offline.)
+- **Show** — the during-show controls: photos vs. videos, slide duration,
+  transitions, caption style, and the library/upload buttons.
+- **Slide** — per-photo overrides for whatever is on screen right now (date,
+  trim, speed, poster frame, hide).
+- **Look** — **Birthday** (the reference date for the **Age** caption; leave it
+  empty if you aren't using age captions) and **Appearance** (accent, background,
+  and caption colors plus the caption font). Changes apply live. Fonts are drawn
+  from those installed on the machine, so it stays fully offline.
+- **Hidden** — photos you've hidden, with a tap to bring them back.
 
-The during-show controls (slide duration, transitions, caption style, photo-vs-video)
-live behind the **gear icon** and are also saved to `slideshow.db`.
+The most-used controls are also on the **control bar** at the bottom of the
+screen (previous / play-pause / next, seconds per slide, and fullscreen); both
+it and the gear fade out when the mouse holds still.
 
 ## Notes
 

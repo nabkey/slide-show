@@ -207,9 +207,10 @@
     background: none; border: none;
     color: var(--ink-dim);
     font-family: var(--ui-font);
-    font-size: 10px; font-weight: 600;
-    letter-spacing: 0.14em; text-transform: uppercase;
-    padding: 8px 2px 9px;
+    font-size: 9.5px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    white-space: nowrap;
+    padding: 8px 1px 9px;
     cursor: pointer;
     border-bottom: 2px solid transparent;
     margin-bottom: -1px;
@@ -484,8 +485,6 @@
   }
   .chips button:hover { color: var(--ink); }
   .chips button.on { background: var(--champagne); border-color: var(--champagne); color: #1b150d; font-weight: 600; }
-  .chips .chipSettings { margin-left: 10px; border-color: var(--champagne-deep); color: var(--champagne); }
-  .chips .chipSettings.on { background: var(--champagne); }
   .libCount {
     margin-left: auto;
     font-family: var(--caption-font); font-style: italic;
@@ -500,13 +499,7 @@
   }
   #libClose:hover { color: var(--ink); border-color: rgba(236,229,216,0.35); }
 
-  #libSettings {
-    display: none;
-    flex: 1;
-    overflow-y: auto;
-    padding: 30px 26px;
-  }
-  #libSettings.show { display: block; }
+  /* Global-settings controls: rendered into the gear panel's "Look" tab. */
   .setWrap { max-width: 460px; margin: 0 auto; }
   .setWrap > .field { margin-bottom: 26px; }
   .setWrap label.big {
@@ -783,7 +776,8 @@
 
   <div class="tabs" id="tabs">
     <button data-t="global" class="on">Show</button>
-    <button data-t="slide">This slide</button>
+    <button data-t="slide">Slide</button>
+    <button data-t="look">Look</button>
     <button data-t="hidden">Hidden<span id="hiddenCount"></span></button>
   </div>
 
@@ -842,6 +836,8 @@
 
   <div class="tab" id="tab-slide" hidden></div>
 
+  <div class="tab" id="tab-look" hidden></div>
+
   <div class="tab" id="tab-hidden" hidden></div>
 </div>
 
@@ -855,13 +851,11 @@
       <button data-f="videos">Videos</button>
       <button data-f="uploads">Uploads</button>
       <button data-f="hidden">Hidden</button>
-      <button data-f="settings" class="chipSettings">Settings</button>
     </div>
     <div class="libCount" id="libCount"></div>
     <button id="libClose" aria-label="Close">&times;</button>
   </div>
   <div id="libGrid"></div>
-  <div id="libSettings"></div>
 </div>
 
 <div id="editModal">
@@ -1310,8 +1304,9 @@
   function setTab(name) {
     activeTab = name;
     for (const b of $('tabs').children) b.classList.toggle('on', b.dataset.t === name);
-    for (const t of ['global', 'slide', 'hidden']) $('tab-' + t).hidden = t !== name;
+    for (const t of ['global', 'slide', 'look', 'hidden']) $('tab-' + t).hidden = t !== name;
     if (name === 'slide') renderSlideTab();
+    if (name === 'look') renderLookTab();
     if (name === 'hidden') renderHiddenTab();
     schedule(); // hold while editing a slide, resume otherwise
   }
@@ -1457,7 +1452,7 @@
     });
   }
 
-  // Shared per-item editor, rendered into either the panel's "This slide"
+  // Shared per-item editor, rendered into either the panel's "Slide"
   // tab (ctx.modal = false) or the library's edit modal (ctx.modal = true).
   // All lookups are box-scoped (data-e attributes) so both can coexist.
   const editorTokens = new WeakMap();
@@ -1688,7 +1683,7 @@
     const box = $('tab-hidden');
     const hid = ALL.filter(s => ov(s.id).hidden);
     if (!hid.length) {
-      box.innerHTML = '<div class="hint" style="border:none;margin:0;padding:0">Nothing hidden. The hide button lives in the <b>This slide</b> tab.</div>';
+      box.innerHTML = '<div class="hint" style="border:none;margin:0;padding:0">Nothing hidden. The hide button lives in the <b>Slide</b> tab.</div>';
       return;
     }
     box.innerHTML = `
@@ -1736,12 +1731,6 @@
   }
 
   function renderLibrary() {
-    // "Settings" is a special view, not a content filter
-    const settingsMode = libFilter === 'settings';
-    $('libGrid').style.display = settingsMode ? 'none' : '';
-    $('libSettings').classList.toggle('show', settingsMode);
-    if (settingsMode) { renderLibSettings(); $('libCount').textContent = ''; return; }
-
     const items = libItems();
     $('libCount').textContent = `${items.length} item${items.length === 1 ? '' : 's'}`;
     $('libGrid').innerHTML = items.map(s => {
@@ -1764,9 +1753,10 @@
     }).join('');
   }
 
-  // Global show settings (stored in slideshow.db) live here.
-  function renderLibSettings() {
-    const box = $('libSettings');
+  // Global show settings (stored in slideshow.db) — birthday for age captions
+  // plus appearance. Rendered into the gear panel's "Look" tab.
+  function renderLookTab() {
+    const box = $('tab-look');
     const newest = ALL.length
       ? [...ALL].sort((a, b) => effDate(a) < effDate(b) ? 1 : -1)[0]
       : null;
@@ -1823,13 +1813,13 @@
     wireDateField(box, norm => {
       save({ birthday: norm });
       if (cur()) updateCaption(cur());
-      renderLibSettings();
+      renderLookTab();
     }, { allowEmpty: true });
     const reset = box.querySelector('[data-e="bdayReset"]');
     if (reset) reset.addEventListener('click', () => {
       save({ birthday: '' });
       if (cur()) updateCaption(cur());
-      renderLibSettings();
+      renderLookTab();
     });
 
     // --- appearance: live-apply, persist, and update the local preview ---
@@ -1849,7 +1839,7 @@
     box.querySelector('[data-e="styleReset"]').addEventListener('click', () => {
       save({ accent: DEFAULTS.accent, bg: DEFAULTS.bg, captionColor: DEFAULTS.captionColor, captionFont: DEFAULTS.captionFont });
       applyStyle();
-      renderLibSettings();
+      renderLookTab();
     });
   }
 
@@ -1898,6 +1888,7 @@
     panel.classList.toggle('open', open);
     gear.classList.toggle('open', open);
     if (open && activeTab === 'slide') renderSlideTab();
+    if (open && activeTab === 'look') renderLookTab();
     if (open && activeTab === 'hidden') renderHiddenTab();
     schedule(); // hold while editing a slide, resume otherwise
   }
