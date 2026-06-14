@@ -141,6 +141,8 @@
     transition: opacity 0.4s ease, transform 0.4s ease;
   }
   body.idle #bar { opacity: 0; pointer-events: none; transform: translateX(-50%) translateY(10px); }
+  /* the bar floats above the library/edit overlays — keep it out of their way */
+  body.overlay #bar { display: none; }
   .barBtn {
     display: grid; place-items: center;
     width: 38px; height: 38px;
@@ -149,6 +151,7 @@
     transition: color 0.15s, background 0.15s;
   }
   .barBtn:hover { color: var(--champagne); background: rgba(236, 229, 216, 0.07); }
+  .barBtn:disabled { opacity: 0.3; pointer-events: none; }
   .barBtn svg { width: 18px; height: 18px; display: block; }
   .barSep { width: 1px; height: 22px; background: var(--hairline); margin: 0 5px; }
   .barCounter {
@@ -1348,6 +1351,8 @@
     settings.duration = v;
     durOut.textContent = v + 's';
     $('barDurVal').textContent = v + 's';
+    $('barDurDown').disabled = v <= DUR_MIN;
+    $('barDurUp').disabled = v >= DUR_MAX;
     if (!fromSlider) slider.value = v;
     save();
     schedule();
@@ -1662,10 +1667,12 @@
     }
     renderEditor($('emBody'), s, { modal: true });
     editModal.classList.add('open');
+    syncChrome();
   }
 
   function closeEditor() {
     editModal.classList.remove('open');
+    syncChrome();
     const v = $('emPreview').querySelector('video');
     if (v) v.pause();
     $('emPreview').innerHTML = '';
@@ -1843,8 +1850,14 @@
     });
   }
 
-  function openLibrary() { renderLibrary(); library.classList.add('open'); togglePanel(false); schedule(); }
-  function closeLibrary() { library.classList.remove('open'); schedule(); }
+  // Hide the control bar whenever a full-screen overlay (library or edit modal)
+  // is up, so it can't float on top of or operate the show behind them.
+  function syncChrome() {
+    const overlay = library.classList.contains('open') || editModal.classList.contains('open');
+    document.body.classList.toggle('overlay', overlay);
+  }
+  function openLibrary() { renderLibrary(); library.classList.add('open'); togglePanel(false); syncChrome(); schedule(); }
+  function closeLibrary() { library.classList.remove('open'); syncChrome(); schedule(); }
 
   $('libBtn').addEventListener('click', openLibrary);
   $('libClose').addEventListener('click', closeLibrary);
@@ -1901,11 +1914,9 @@
     else document.documentElement.requestFullscreen();
   }
   $('fsBtn').addEventListener('click', toggleFullscreen);
-  document.addEventListener('fullscreenchange', () => {
-    const fs = !!document.fullscreenElement;
-    document.body.classList.toggle('fs', fs);
-    wake(); // surface the controls briefly after the mode change
-  });
+  // Fullscreen now only fills the screen; idle handles hiding. Surface the
+  // controls briefly after the mode change so they're not stuck out of sight.
+  document.addEventListener('fullscreenchange', wake);
 
   /* ---------- Control bar ---------- */
   // The high-frequency transport (prev / play-pause / next), the most-tweaked
