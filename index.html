@@ -126,6 +126,45 @@
   #gear svg { width: 20px; height: 20px; }
   body.idle #gear:not(.open) { opacity: 0; pointer-events: none; }
 
+  /* ---------- Control bar ---------- */
+  #bar {
+    position: fixed; left: 50%; bottom: 26px; z-index: 20;
+    transform: translateX(-50%);
+    display: flex; align-items: center; gap: 3px;
+    padding: 6px 10px;
+    background: var(--panel-bg);
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    box-shadow: 0 14px 44px rgba(0,0,0,0.5);
+    backdrop-filter: blur(14px) saturate(1.1);
+    -webkit-backdrop-filter: blur(14px) saturate(1.1);
+    transition: opacity 0.4s ease, transform 0.4s ease;
+  }
+  body.idle #bar { opacity: 0; pointer-events: none; transform: translateX(-50%) translateY(10px); }
+  .barBtn {
+    display: grid; place-items: center;
+    width: 38px; height: 38px;
+    background: none; border: none; border-radius: 50%;
+    color: var(--ink-dim); cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+  .barBtn:hover { color: var(--champagne); background: rgba(236, 229, 216, 0.07); }
+  .barBtn svg { width: 18px; height: 18px; display: block; }
+  .barSep { width: 1px; height: 22px; background: var(--hairline); margin: 0 5px; }
+  .barCounter {
+    font-family: var(--caption-font); font-style: italic;
+    font-size: 14px; color: var(--ink-dim);
+    padding: 0 4px; min-width: 58px;
+    text-align: center; white-space: nowrap;
+  }
+  .barDur { display: flex; align-items: center; gap: 1px; }
+  .barStep { width: 30px; height: 30px; font-size: 19px; line-height: 1; }
+  .barDurVal {
+    font-family: var(--caption-font); font-style: italic;
+    font-size: 14px; color: var(--champagne);
+    min-width: 30px; text-align: center;
+  }
+
   /* ---------- Settings panel ---------- */
   #panel {
     position: fixed; top: 78px; right: 22px; z-index: 19;
@@ -717,6 +756,27 @@
   </svg>
 </button>
 
+<div id="bar" role="toolbar" aria-label="Playback controls">
+  <button class="barBtn" id="barPrev" aria-label="Previous slide">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 4.5 8 12l7.5 7.5V4.5z"/></svg>
+  </button>
+  <button class="barBtn" id="barPlay" aria-label="Pause"></button>
+  <button class="barBtn" id="barNext" aria-label="Next slide">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.5 4.5 16 12l-7.5 7.5V4.5z"/></svg>
+  </button>
+  <span class="barSep"></span>
+  <span class="barCounter" id="barCounter">&mdash;</span>
+  <span class="barSep"></span>
+  <div class="barDur" title="Seconds per slide">
+    <button class="barBtn barStep" id="barDurDown" aria-label="Less time per slide">&minus;</button>
+    <span class="barDurVal" id="barDurVal"></span>
+    <button class="barBtn barStep" id="barDurUp" aria-label="More time per slide">+</button>
+  </div>
+  <button class="barBtn" id="barFs" aria-label="Toggle fullscreen">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg>
+  </button>
+</div>
+
 <div id="panel">
   <h1>Slideshow</h1>
   <div class="counter" id="counter">&nbsp;</div>
@@ -823,6 +883,8 @@
 (async () => {
   const $ = id => document.getElementById(id);
   const layers = [$('layerA'), $('layerB')];
+  const PLAY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg>';
+  const PAUSE_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="3.6" height="14" rx="1"/><rect x="13.9" y="5" width="3.6" height="14" rx="1"/></svg>';
   const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const src = p => encodeURI('/' + p);
 
@@ -907,6 +969,7 @@
     overrides = data.overrides || {};
     serverSettings = data.settings || {};
   } catch (e) {
+    $('bar').style.display = 'none'; // nothing to control if the server is down
     showEmpty('The projector is off');
     return;
   }
@@ -1227,12 +1290,16 @@
 
   function updateCounter() {
     $('counter').textContent = list.length ? `${idx + 1} of ${list.length}` : 'no photos';
+    $('barCounter').textContent = list.length ? `${idx + 1} / ${list.length}` : '—';
   }
 
   /* ---------- Pause ---------- */
   function setPaused(p) {
     paused = p;
     $('pauseBadge').classList.toggle('show', p);
+    const bp = $('barPlay');
+    bp.innerHTML = p ? PLAY_SVG : PAUSE_SVG;
+    bp.setAttribute('aria-label', p ? 'Play' : 'Pause');
     if (p) clearTimeout(timer); else schedule();
   }
 
@@ -1278,14 +1345,21 @@
   bindSeg('segCap', 'caption', () => cur() && updateCaption(cur()));
 
   const slider = $('durSlider'), durOut = $('durOut');
-  slider.value = settings.duration;
-  durOut.textContent = settings.duration + 's';
-  slider.addEventListener('input', () => {
-    settings.duration = parseInt(slider.value, 10);
-    durOut.textContent = settings.duration + 's';
+  const DUR_MIN = parseInt(slider.min, 10), DUR_MAX = parseInt(slider.max, 10);
+  // Single source of truth for slide duration, shared by the panel slider and
+  // the control bar's −/+ stepper. fromSlider avoids fighting the slider thumb.
+  function setDuration(v, fromSlider) {
+    v = Math.max(DUR_MIN, Math.min(DUR_MAX, v));
+    settings.duration = v;
+    durOut.textContent = v + 's';
+    $('barDurVal').textContent = v + 's';
+    if (!fromSlider) slider.value = v;
     save();
     schedule();
-  });
+  }
+  slider.value = settings.duration;
+  setDuration(settings.duration);
+  slider.addEventListener('input', () => setDuration(parseInt(slider.value, 10), true));
 
   /* ---------- Panel: uploads & rescan ---------- */
   async function refreshFromServer() {
@@ -1841,6 +1915,19 @@
     document.body.classList.toggle('fs', fs);
     wake(); // surface the controls briefly after the mode change
   });
+
+  /* ---------- Control bar ---------- */
+  // The high-frequency transport (prev / play-pause / next), the most-tweaked
+  // setting (seconds per slide), and fullscreen — always one mouse-move away,
+  // and hidden by the same idle logic as the gear.
+  $('bar').addEventListener('click', e => e.stopPropagation()); // don't drive the show behind it
+  $('barPrev').addEventListener('click', () => advance(-1));
+  $('barNext').addEventListener('click', () => advance(1));
+  $('barPlay').addEventListener('click', () => setPaused(!paused));
+  $('barFs').addEventListener('click', toggleFullscreen);
+  $('barDurDown').addEventListener('click', () => setDuration(settings.duration - 1));
+  $('barDurUp').addEventListener('click', () => setDuration(settings.duration + 1));
+  setPaused(paused); // paint the initial play/pause icon
 
   /* ---------- Input ---------- */
   document.addEventListener('keydown', e => {
