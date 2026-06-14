@@ -125,7 +125,6 @@
   #gear:hover { color: var(--champagne); transform: rotate(40deg); }
   #gear svg { width: 20px; height: 20px; }
   body.idle #gear:not(.open) { opacity: 0; pointer-events: none; }
-  body.fs #gear, body.fs #panel { display: none; }
 
   /* ---------- Settings panel ---------- */
   #panel {
@@ -777,7 +776,7 @@
 
     <div class="hint">
       <b>&larr;&thinsp;&rarr;</b> skip &nbsp;&middot;&nbsp; <b>space</b> pause &nbsp;&middot;&nbsp; <b>F</b> fullscreen &nbsp;&middot;&nbsp; <b>L</b> library<br>
-      Settings hide in fullscreen — press <b>esc</b> to get them back.
+      The controls fade when the mouse holds still — move it to bring them back.
     </div>
   </div>
 
@@ -1840,7 +1839,7 @@
   document.addEventListener('fullscreenchange', () => {
     const fs = !!document.fullscreenElement;
     document.body.classList.toggle('fs', fs);
-    if (fs) togglePanel(false);
+    wake(); // surface the controls briefly after the mode change
   });
 
   /* ---------- Input ---------- */
@@ -1869,14 +1868,20 @@
     advance(e.clientX < window.innerWidth * 0.3 ? -1 : 1);
   });
 
-  /* ---------- Idle cursor/UI hiding ---------- */
+  /* ---------- Idle UI hiding ---------- */
+  // Holding still (no mouse/keyboard/touch activity) hides the cursor and all
+  // chrome — the gear and the control bar — in both windowed and fullscreen.
+  // Any intent brings them back. Fullscreen only fills the screen; it no longer
+  // governs whether the controls are visible.
   let idleTimer = null;
   function wake() {
     document.body.classList.remove('idle');
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => document.body.classList.add('idle'), 3000);
   }
-  document.addEventListener('mousemove', wake);
+  for (const ev of ['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel']) {
+    document.addEventListener(ev, wake, { passive: true });
+  }
   wake();
 
   /* ---------- Go ---------- */

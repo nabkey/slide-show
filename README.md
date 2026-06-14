@@ -62,8 +62,9 @@ brew install exiftool ffmpeg
      bun server.ts          # then open http://127.0.0.1:8765
      bun server.ts --open   # ...or have it open the browser for you
      ```
-3. Press **F** for fullscreen and let it run. The settings gear hides automatically
-   in fullscreen (press **Esc** to bring it back).
+3. Press **F** for fullscreen and let it run. The controls (the gear and the
+   control bar) fade out whenever the mouse holds still — move it to bring them
+   back. This works the same in a window or in fullscreen.
 
 The first launch is the slow one — it converts every HEIC and reads every date.
 After that it's cached, so restarts are instant.
