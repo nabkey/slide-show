@@ -1081,10 +1081,16 @@
   }
 
   /* ---------- Slide engine ---------- */
-  // auto-advance holds while the per-slide editor or the library is open
-  const editing = () =>
-    (panel.classList.contains('open') && activeTab === 'slide') ||
-    library.classList.contains('open');
+  // auto-advance holds while the per-slide editor or the library is open.
+  // Look the elements up by id rather than via the panel/library consts, which
+  // are declared further down — editing() runs during init (setDuration), before
+  // those consts initialize, so closing over them would hit a TDZ error.
+  const editing = () => {
+    const p = document.getElementById('panel');
+    const lib = document.getElementById('library');
+    return (p.classList.contains('open') && activeTab === 'slide') ||
+      lib.classList.contains('open');
+  };
 
   function schedule() {
     clearTimeout(timer);
