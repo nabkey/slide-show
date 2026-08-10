@@ -38,7 +38,10 @@
     position: absolute;
     inset: 0;
     opacity: 0;
-    will-change: opacity, transform;
+    /* No will-change here: parking it in the stylesheet promotes both
+       full-viewport layers to their own GPU textures for the whole show. It is
+       switched on for the length of a transition and off again in reveal(). */
+    contain: layout style;
   }
   .layer img, .layer video {
     width: 100%;
@@ -47,16 +50,23 @@
     display: block;
   }
 
-  @keyframes kenburns-a { from { transform: scale(1.0); } to { transform: scale(1.075) translate(0.8%, -0.5%); } }
-  @keyframes kenburns-b { from { transform: scale(1.075) translate(-0.8%, 0.5%); } to { transform: scale(1.0); } }
+  /* Both drift *out*, never in. A composited scale animation rasterizes once at
+     a fixed scale, so a 1.0 -> 1.075 zoom is rastered at 1.0 and stays 7.5%
+     soft for the whole slide — very visible on a projector. Starting at the
+     largest scale takes that raster at full size and only ever shrinks it. */
+  @keyframes kenburns-a { from { transform: scale(1.075) translate(-0.8%, 0.5%); } to { transform: scale(1.0); } }
+  @keyframes kenburns-b { from { transform: scale(1.075) translate(0.8%, -0.5%); } to { transform: scale(1.0); } }
 
   /* ---------- Atmosphere: vignette + grain ---------- */
   #vignette {
     position: fixed; inset: 0; pointer-events: none; z-index: 5;
     background: radial-gradient(ellipse 130% 110% at 50% 45%, transparent 55%, rgba(0,0,0,0.42) 100%);
   }
+  /* 106%, not 200%: this is a permanently composited layer, so its area is paid
+     for in GPU memory every frame (4x the viewport at 200% — ~132 MB at 4K).
+     The animation only shifts it by ±2%, so a 3% overhang is all it needs. */
   #grain {
-    position: fixed; inset: -50%; width: 200%; height: 200%;
+    position: fixed; inset: -3%; width: 106%; height: 106%;
     pointer-events: none; z-index: 6; opacity: 0.05;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
     animation: grain-shift 1.6s steps(4) infinite;
@@ -65,6 +75,15 @@
     0% { transform: translate(0, 0); } 25% { transform: translate(-2%, 1%); }
     50% { transform: translate(1%, -2%); } 75% { transform: translate(-1%, 2%); }
     100% { transform: translate(0, 0); }
+  }
+
+  /* Kill the movement, keep the crossfade — a slow opacity change is not what
+     motion sensitivity is about, but a drifting photo and a jittering grain
+     layer running for hours are. Ken Burns is set as an inline style, hence
+     the !important. */
+  @media (prefers-reduced-motion: reduce) {
+    #grain { animation: none; }
+    .layer img { animation: none !important; }
   }
 
   /* ---------- Date caption ---------- */
@@ -1201,11 +1220,24 @@
     }
   }
 
+  // How long each transition actually runs. Both the layer teardown and the
+  // will-change window are derived from this, so changing a duration below
+  // can't leave them out of step.
+  const SLIDE_MS = 700, FADE_MS = 1000;
+  const transitionMs = tr => (tr === 'none' ? 0 : tr === 'slide' ? SLIDE_MS : FADE_MS);
+  let revealSeq = 0;
+
   function reveal(back, el, dir) {
     const front = layers[active];
     const tr = settings.transition;
     back.style.zIndex = 2;
     front.style.zIndex = 1;
+
+    // Promote both layers for the length of the transition only. Left on
+    // permanently this costs two full-viewport GPU textures for the whole show
+    // and freezes the rasterization scale, which is what softens Ken Burns.
+    const myReveal = ++revealSeq;
+    for (const l of layers) l.style.willChange = 'opacity, transform';
 
     back.style.transition = 'none';
     front.style.transition = 'none';
@@ -1218,16 +1250,16 @@
       back.style.transform = `translateX(${dir * 100}%)`;
       back.style.opacity = 1;
       void back.offsetWidth;
-      back.style.transition = 'transform 0.7s cubic-bezier(0.22, 1, 0.3, 1)';
-      front.style.transition = 'transform 0.7s cubic-bezier(0.22, 1, 0.3, 1), opacity 0s linear 0.7s';
+      back.style.transition = `transform ${SLIDE_MS}ms cubic-bezier(0.22, 1, 0.3, 1)`;
+      front.style.transition = `transform ${SLIDE_MS}ms cubic-bezier(0.22, 1, 0.3, 1), opacity 0s linear ${SLIDE_MS}ms`;
       back.style.transform = 'translateX(0)';
       front.style.transform = `translateX(${dir * -100}%)`;
       front.style.opacity = 0;
     } else { // fade & kenburns crossfade
       back.style.opacity = 0;
       void back.offsetWidth;
-      back.style.transition = 'opacity 1s ease';
-      front.style.transition = 'opacity 1s ease';
+      back.style.transition = `opacity ${FADE_MS}ms ease`;
+      front.style.transition = `opacity ${FADE_MS}ms ease`;
       back.style.opacity = 1;
       front.style.opacity = 0;
     }
@@ -1245,7 +1277,10 @@
         clearLayer(retired);
         retired.style.transform = '';
       }
-    }, 1100);
+      // Only the newest reveal gets to de-promote — a faster advance may have
+      // started its own transition while this timeout was pending.
+      if (myReveal === revealSeq) for (const l of layers) l.style.willChange = 'auto';
+    }, transitionMs(tr) + 100);
   }
 
   function advance(dir) { show(idx + dir, dir); }

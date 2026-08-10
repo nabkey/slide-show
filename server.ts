@@ -344,6 +344,12 @@ async function serveStatic(urlPath: string, req: Request): Promise<Response> {
   const file = Bun.file(full);
   if (!(await file.exists())) return new Response('Not found', { status: 404 });
 
+  // Long enough that a full pass through a big folder doesn't re-read every
+  // file from disk a second time, short enough that swapping a file on disk
+  // for a different one still shows up without a hard reload. Not `immutable`
+  // for exactly that reason — poster frames are cache-busted with ?v= instead.
+  const cache = 'private, max-age=3600';
+
   const range = req.headers.get('range');
   if (range) {
     const m = /bytes=(\d*)-(\d*)/.exec(range);
@@ -358,12 +364,13 @@ async function serveStatic(urlPath: string, req: Request): Promise<Response> {
             'Content-Range': `bytes ${start}-${end}/${size}`,
             'Accept-Ranges': 'bytes',
             'Content-Type': file.type,
+            'Cache-Control': cache,
           },
         });
       }
     }
   }
-  return new Response(file, { headers: { 'Accept-Ranges': 'bytes' } });
+  return new Response(file, { headers: { 'Accept-Ranges': 'bytes', 'Cache-Control': cache } });
 }
 
 function freeDest(stem: string, ext: string): string {
