@@ -500,6 +500,8 @@ try {
 
       if (req.method === 'GET') {
         if (p === '/' || p === '/index.html') return new Response(Bun.file(path.join(ROOT, 'index.html')));
+        // Browsers ask for this unprompted; a 404 per load is just console noise.
+        if (p === '/favicon.ico') return new Response(null, { status: 204 });
         if (p === '/api/slides') return json({ slides, overrides: allOverrides(), settings: allSettings() });
         if (p === '/api/thumb') {
           const slide = slides.find(s => s.id === url.searchParams.get('id'));

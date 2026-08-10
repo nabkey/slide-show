@@ -1116,10 +1116,60 @@
     if (!paused && !editing()) timer = setTimeout(() => advance(1), settings.duration * 1000);
   }
 
-  function preload(i) {
+  /* ---------- Decode-ahead cache ----------
+     `new Image().src = url` only warms the HTTP cache: nothing references the
+     Image, and browsers throw away decoded data for images that aren't on
+     screen. So the decode — the expensive part, tens of ms for a 12 MP photo —
+     still landed on the main thread at the exact moment we revealed the slide.
+
+     Holding the element is what keeps the decode alive, so this keeps one
+     behind / one ahead plus the current slide, and hands the very same element
+     to the stage. Three is deliberately small: a 4032x3024 photo is ~48 MB
+     decoded regardless of how big it's painted, and Safari reloads pages that
+     use too much memory. Serving pre-resized JPEGs would make a wider window
+     affordable; until then, three is the honest ceiling. */
+  const AHEAD = 1, BEHIND = 1;
+  const decoded = new Map(); // url -> { img, ready }
+
+  function warm(url) {
+    let e = decoded.get(url);
+    if (e) return e;
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    // Resolves when a bitmap exists, rejects for unreadable files — either way
+    // the slide is as ready as it will ever be.
+    e = { img, ready: img.decode().catch(() => {}) };
+    decoded.set(url, e);
+    return e;
+  }
+
+  // The cached element itself goes on screen; cloning it would decode again.
+  // The one case it can't is a folder small enough that the same slide is in
+  // both layers at once — then a second element is cheap, it's the same file.
+  function takeImage(url) {
+    const e = warm(url);
+    if (e.img.isConnected) {
+      const fresh = new Image();
+      fresh.src = url;
+      return fresh;
+    }
+    e.img.style.animation = ''; // clear a previous slide's Ken Burns fill
+    return e.img;
+  }
+
+  function preload(i, dir) {
     if (!list.length) return;
-    const s = list[((i % list.length) + list.length) % list.length];
-    new Image().src = imgSrc(s);
+    const d = dir < 0 ? -1 : 1;
+    const keep = new Set();
+    for (let k = -BEHIND; k <= AHEAD; k++) {
+      const s = list[(((i + k * d) % list.length) + list.length) % list.length];
+      if (!slideUsesVideo(s)) keep.add(imgSrc(s));
+    }
+    for (const url of keep) warm(url);
+    // Dropping the entry drops our reference; anything still on screen is kept
+    // alive by the DOM until its layer is cleared.
+    for (const url of [...decoded.keys()]) if (!keep.has(url)) decoded.delete(url);
   }
 
   function slideUsesVideo(slide) {
@@ -1161,28 +1211,52 @@
       const v = document.createElement('video');
       v.muted = true;
       v.loop = true;
-      v.autoplay = true;
       v.playsInline = true;
+      v.preload = 'auto';
+      // The still we already have — the Live Photo frame, or the poster ffmpeg
+      // pulled for a standalone clip — so the layer never reveals black while
+      // the first video frame is still being decoded.
+      v.poster = imgSrc(slide);
       v.src = src(slide.vid);
       const applyRate = () => { try { v.playbackRate = videoRate(slide, v.duration); } catch (e) {} };
       v.addEventListener('loadedmetadata', () => {
         const t = ov(slide.id).trim;
         if (t) v.currentTime = t[0];
         applyRate();
-      });
-      // keep playback inside the trim window and keep the rate current (both read
-      // overrides live so editor changes take effect immediately)
-      v._trimTimer = setInterval(() => {
-        applyRate();
-        const t = ov(slide.id).trim;
-        if (!t) return;
-        if (v.currentTime > t[1] || v.currentTime < t[0] - 0.35) v.currentTime = t[0];
-      }, 90);
+      }, { once: true });
+
+      // Keep playback inside the trim window and keep the rate current (both
+      // read overrides live, so editor changes take effect immediately). Driven
+      // off real composited frames rather than a 90ms interval: it only runs
+      // when there is something to correct, the trim edge lands on a frame
+      // instead of within ±90ms of one, and it stops on its own when the
+      // element leaves the DOM.
+      if ('requestVideoFrameCallback' in v) {
+        let rate = null;
+        const tick = (now, meta) => {
+          if (!v.isConnected) return;
+          const t = ov(slide.id).trim;
+          if (t && (meta.mediaTime > t[1] || meta.mediaTime < t[0] - 0.05)) v.currentTime = t[0];
+          const r = videoRate(slide, v.duration);
+          if (r !== rate) { rate = r; try { v.playbackRate = r; } catch (e) {} }
+          v.requestVideoFrameCallback(tick);
+        };
+        v.requestVideoFrameCallback(tick);
+      } else {
+        v._trimTimer = setInterval(() => {
+          applyRate();
+          const t = ov(slide.id).trim;
+          if (!t) return;
+          if (v.currentTime > t[1] || v.currentTime < t[0] - 0.35) v.currentTime = t[0];
+        }, 90);
+      }
+
+      // Explicit, rather than the autoplay attribute: WebKit pauses autoplaying
+      // video it considers invisible, and these are built in a hidden layer.
+      v.play().catch(() => {});
       return v;
     }
-    const img = document.createElement('img');
-    img.src = imgSrc(slide);
-    return img;
+    return takeImage(imgSrc(slide));
   }
 
   function show(i, dir) {
@@ -1203,20 +1277,28 @@
       updateCaption(slide);
       updateCounter();
       maybeRenderSlideTab();
-      preload(i + dir);
+      preload(i, dir);
       schedule();
     };
 
+    let started = false;
+    const once = () => { if (!started) { started = true; go(); } };
+
     if (el.tagName === 'VIDEO') {
-      let started = false;
-      const once = () => { if (!started) { started = true; go(); } };
-      el.addEventListener('loadeddata', once);
+      // requestVideoFrameCallback fires when a frame actually reaches the
+      // compositor — including before play() — which is the real "there is
+      // something to show" signal. loadeddata only means bytes were decoded.
+      if ('requestVideoFrameCallback' in el) el.requestVideoFrameCallback(() => once());
+      else el.addEventListener('loadeddata', once, { once: true });
       setTimeout(once, 900); // don't stall the show on a slow video
-    } else if (el.complete) {
-      go();
     } else {
-      el.onload = go;
-      el.onerror = go; // skip gracefully past unreadable files
+      // Reveal on decode, not on load: `load` means the bytes arrived, and a
+      // sync decode at that point is exactly the dropped frame we're avoiding.
+      // Pre-warmed slides resolve immediately; the bail-out is for the ones
+      // that aren't — jumping into the middle of the show from the library —
+      // where a brief flash beats an unresponsive arrow key.
+      el.decode().then(once, once);
+      setTimeout(once, 250);
     }
   }
 
@@ -2013,6 +2095,28 @@
     document.addEventListener(ev, wake, { passive: true });
   }
   wake();
+
+  /* ---------- Keeping the screen on ----------
+     A projector showing this for six hours needs the display kept awake. The
+     wake lock is released automatically whenever the page stops being visible
+     (and on low battery), so it has to be re-requested rather than taken once.
+     It only covers the display while this page is visible, which is why the
+     launcher also runs `caffeinate` for the life of the server. */
+  let wakeLock = null;
+  async function acquireWakeLock() {
+    if (!('wakeLock' in navigator) || wakeLock || document.visibilityState !== 'visible') return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch (e) { /* denied for now — the retry below will try again */ }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    acquireWakeLock();
+    schedule(); // timers are throttled while hidden; re-arm on the way back
+  });
+  acquireWakeLock();
+  setInterval(acquireWakeLock, 60000);
 
   /* ---------- Go ---------- */
   rebuild();
