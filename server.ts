@@ -61,6 +61,12 @@ const SETTING_DEFAULTS: Record<string, string> = {
 
 let slides: Slide[] = [];
 
+// Without exiftool every date is a guess (filename pattern, else mtime). Those
+// guesses are still worth showing, but they must not be written to exif_cache:
+// the cache is keyed on size+mtime, so a guess cached now would survive
+// installing exiftool later and quietly keep the show in the wrong order.
+const HAS_EXIFTOOL = !!Bun.which('exiftool');
+
 // ---------- scanning ----------
 
 const fmt = (t: Date) =>
@@ -211,10 +217,13 @@ async function scan(): Promise<Slide[]> {
     const abs = path.resolve(p);
     if (fresh.has(abs)) {
       const d = fresh.get(abs)!;
-      upsert.run(rel, sigs.get(rel)!, d);
+      if (HAS_EXIFTOOL) upsert.run(rel, sigs.get(rel)!, d);
       return d;
     }
-    return (getCached.get(rel) as { d: string }).d;
+    // Cached, or — if exiftool skipped this file without erroring on the whole
+    // chunk — fall back rather than take down the scan.
+    const row = getCached.get(rel) as { d: string } | null;
+    return row?.d ?? filenameDate(path.basename(rel)) ?? fmt(new Date(statSync(p).mtimeMs));
   };
 
   const result: Slide[] = [];
@@ -317,6 +326,17 @@ function applyPatch(id: string, patch: Patch) {
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 
+// A malformed body is a bug in the caller, not a reason to throw a stack trace
+// through Bun.serve — hand the handlers an empty object and let them 400.
+const body = async (req: Request): Promise<Record<string, any>> => {
+  try {
+    const v = await req.json();
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return {};
+  }
+};
+
 async function serveStatic(urlPath: string, req: Request): Promise<Response> {
   const full = path.normalize(path.join(ROOT, urlPath));
   if (!full.startsWith(ROOT + path.sep)) return new Response('Forbidden', { status: 403 });
@@ -417,8 +437,47 @@ function removeUpload(id: string): Response {
   return json({ ok: true });
 }
 
+// ---------- preflight ----------
+
+// There are no npm dependencies, but the app does lean on Bun plus four
+// command-line tools, and every one of them fails *quietly* — a missing
+// exiftool just puts the whole show in the wrong order, with nothing on screen
+// to say why. Report it before the scan runs, which is the slow part.
+const MIN_BUN = '1.2.0';
+
+const olderThan = (have: string, want: string) => {
+  const a = have.split('-')[0].split('.').map(Number);
+  const b = want.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  }
+  return false;
+};
+
+const TOOLS = [
+  { bin: 'exiftool', why: 'slides fall back to file modification time instead of the date the photo was taken', install: 'brew install exiftool' },
+  { bin: 'ffmpeg', why: 'standalone video slides get no poster frame, and uploads are not transcoded', install: 'brew install ffmpeg' },
+  { bin: 'ffprobe', why: 'video duration and codec cannot be detected', install: 'brew install ffmpeg' },
+  { bin: 'sips', why: 'HEIC photos will not convert and the library falls back to full-size thumbnails', install: 'built into macOS — this app expects to run there' },
+];
+
+function preflight() {
+  const problems: string[] = [];
+  if (olderThan(Bun.version, MIN_BUN)) {
+    problems.push(`Bun ${Bun.version} is older than the ${MIN_BUN} this needs — run \`bun upgrade\`.`);
+  }
+  for (const t of TOOLS) {
+    if (!Bun.which(t.bin)) problems.push(`no ${t.bin}: ${t.why}.\n     install: ${t.install}`);
+  }
+  if (!problems.length) return;
+  console.warn('\n  ⚠︎  Missing pieces — the slideshow will still start, but:\n');
+  for (const p of problems) console.warn(`   • ${p}`);
+  console.warn('\n  Install what you need, then restart — nothing is cached from a degraded run.\n');
+}
+
 // ---------- main ----------
 
+preflight();
 slides = await scan();
 
 let server;
@@ -465,17 +524,18 @@ try {
           }
         }
         if (p === '/api/settings') {
-          const { patch } = await req.json();
+          const { patch } = await body(req);
           applySettings(patch ?? {});
           return json({ ok: true, settings: allSettings() });
         }
         if (p === '/api/override') {
-          const { id, patch } = await req.json();
+          const { id, patch } = await body(req);
+          if (typeof id !== 'string' || !id) return json({ ok: false, error: 'Missing id.' }, 400);
           applyPatch(id, patch ?? {});
           return json({ ok: true });
         }
         if (p === '/api/poster') {
-          const { id, time } = await req.json();
+          const { id, time } = await body(req);
           const slide = slides.find(s => s.id === id);
           if (!slide?.solo || !slide.vid) return json({ ok: false, error: 'Not a standalone video slide.' }, 400);
           const poster = posterFor(slide.vid);
@@ -485,8 +545,8 @@ try {
           return json({ ok: true });
         }
         if (p === '/api/remove-upload') {
-          const { id } = await req.json();
-          const res = removeUpload(id);
+          const { id } = await body(req);
+          const res = removeUpload(String(id ?? ''));
           if (res.status === 200) slides = await scan();
           return res;
         }

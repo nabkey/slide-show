@@ -37,11 +37,14 @@ anywhere.
 
 ## Requirements
 
-macOS, with three tools (all free):
+macOS, with three tools (all free). There are **no npm dependencies** — these
+command-line tools are the entire dependency list.
 
-- **[Bun](https://bun.sh)** — the runtime. Install: `curl -fsSL https://bun.sh/install | bash`
-- **exiftool** — reads photo/video dates. Install: `brew install exiftool`
-- **ffmpeg** — video poster frames + transcoding. Install: `brew install ffmpeg`
+| Tool | Needed for | Minimum | Current as of Aug 2026 | Install |
+|------|------------|---------|------------------------|---------|
+| **[Bun](https://bun.sh)** | the runtime + `bun:sqlite` | 1.2 | 1.3.14 | `curl -fsSL https://bun.sh/install \| bash` |
+| **exiftool** | photo/video "date taken" | any | 13.55 | `brew install exiftool` |
+| **ffmpeg** (with `ffprobe`) | poster frames, transcoding | any | 8.1.2 | `brew install ffmpeg` |
 
 `sips` (HEIC → JPEG, thumbnails) ships with macOS, so there's nothing to install
 for that.
@@ -50,6 +53,19 @@ for that.
 # one-liner for the Homebrew bits
 brew install exiftool ffmpeg
 ```
+
+Keeping them current — worth doing before a party, not during one:
+
+```sh
+bun upgrade
+brew upgrade exiftool ffmpeg
+```
+
+The server checks all of this at startup and prints exactly what's missing and
+what it will degrade to. It still starts without them, but a run without
+exiftool orders slides by file modification time rather than by date taken —
+so it deliberately caches nothing, and installing exiftool later fixes the order
+on the next restart.
 
 ## Quick start
 
