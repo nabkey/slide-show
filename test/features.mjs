@@ -44,6 +44,10 @@ const ROTATED = 'IMG_20040101_120000.jpg';
   const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, (body.length + 2) >> 8, (body.length + 2) & 255]), body]);
   writeFileSync(path.join(dir, ROTATED), Buffer.concat([jpg.subarray(0, 2), app1, jpg.subarray(2)]));
 }
+// an animated GIF (second by date): it should keep animating on the stage
+const GIF = 'IMG_20040102_120000.gif';
+await new Promise((res, rej) => spawn('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=320x240:r=10', '-t', '2',
+  path.join(dir, GIF)], { stdio: 'ignore' }).on('exit', c => (c ? rej(new Error('ffmpeg gif')) : res())));
 const server = spawn('bun', ['server.ts'], { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] });
 await new Promise(res => server.stdout.on('data', d => /Slideshow ready/.test(d) && res()));
 const base = `http://127.0.0.1:${port}`;
@@ -80,11 +84,12 @@ const waitIdx = async (want, ms = 6000) => {
 const stage = () => page.evaluate(() => {
   const ls = [...document.querySelectorAll('#stage .layer')];
   const top = ls.sort((a, b) => (+getComputedStyle(b).zIndex || 0) - (+getComputedStyle(a).zIndex || 0))[0];
-  const c = top.querySelector('canvas'), v = top.querySelector('video');
+  const c = top.querySelector('canvas'), v = top.querySelector('video'), im = top.querySelector('img');
   return {
     opacity: +getComputedStyle(top).opacity,
     canvas: c ? { w: c.width, h: c.height } : null,
     video: v ? { t: v.currentTime, rate: v.playbackRate, paused: v.paused, vis: getComputedStyle(v).visibility, ready: v.readyState } : null,
+    img: im ? { ok: im.complete && im.naturalWidth > 0 } : null,
     caption: document.getElementById('caption').textContent,
     captionShown: document.getElementById('caption').classList.contains('show'),
   };
@@ -112,6 +117,17 @@ check('first slide is a painted canvas', st.opacity === 1 && st.canvas && st.can
 check('date caption', /^[A-Z][a-z]+ \d{4}$/.test(st.caption) && st.captionShown, st.caption);
 
 check('auto-advances', await waitIdx(1, 5000));
+await page.waitForTimeout(1200);
+st = await stage();
+{
+  const a = decodePng(await page.screenshot({ clip: { x: 400, y: 200, width: 480, height: 320 } }));
+  await page.waitForTimeout(350);
+  const b = decodePng(await page.screenshot({ clip: { x: 400, y: 200, width: 480, height: 320 } }));
+  let d = 0;
+  for (let i = 0; i < a.lum.length; i++) d += Math.abs(a.lum[i] - b.lum[i]);
+  check('animated GIF is a live, decoded <img> and keeps animating', order[1] === GIF && st.img && st.img.ok && d / a.lum.length > 2,
+    `mean frame change ${(d / a.lum.length).toFixed(1)}`);
+}
 await page.keyboard.press('ArrowRight');
 check('→ goes forward', await waitIdx(2, 2000));
 await page.keyboard.press('ArrowLeft');

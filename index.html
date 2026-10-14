@@ -46,7 +46,7 @@
     contain: strict;
     will-change: opacity, transform;
   }
-  .layer canvas, .layer video {
+  .layer canvas, .layer video, .layer img {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -56,7 +56,7 @@
   .layer canvas { object-fit: cover; will-change: transform; }
   /* panoramas in Drift: full height, wider than the screen, panned sideways */
   .layer canvas.pan { right: auto; width: auto; }
-  .layer video { object-fit: contain; }
+  .layer video, .layer img { object-fit: contain; }
   .layer .vslide { position: absolute; inset: 0; }
 
   /* ---------- Atmosphere: vignette + grain ---------- */
@@ -1480,6 +1480,20 @@
     if (slideUsesVideo(slide)) {
       try { return await buildVideo(slide); }
       catch (e) { /* unplayable clip: fall back to its still (Live Photo frame / poster) */ }
+    }
+    if (/\.gif$/i.test(slide.img)) {
+      // keep GIFs animating: a live <img> (decoded before the cut) over a
+      // still of its first frame, composed exactly where the <img> lands
+      const img = new Image();
+      img.src = imgSrc(slide);
+      const [still] = await Promise.all([
+        renderStill(imgSrc(slide), { ...stillOpts(false), maxUp: 1e4 }),
+        img.decode(),
+      ]);
+      const wrap = document.createElement('div');
+      wrap.className = 'vslide';
+      wrap.append(still.canvas, img);
+      return { el: wrap, kind: 'gif', slide };
     }
     const { canvas, info } = await renderStill(imgSrc(slide), stillOpts(drifting()));
     if (info.pan) canvas.classList.add('pan');

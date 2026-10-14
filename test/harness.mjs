@@ -41,7 +41,7 @@
 // Set PLAYWRIGHT_MODULE to point at a playwright install if it isn't resolvable.
 
 import { spawn } from 'node:child_process';
-import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import os, { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -143,6 +143,31 @@ const INSTRUMENT = (noCover) => {
 const { items } = await ensureFixtures(FIXTURES);
 const byId = new Map(items.map(it => [it.id, it]));
 
+// Resident memory of the whole browser (renderer + GPU/compositor + ...), in
+// MB, from /proc (Linux). With software compositing, textures live in RAM, so
+// this is where a 190 MB decoded photo would show up.
+function browserRssMB(rootPid) {
+  try {
+    const kids = new Map();
+    for (const d of readdirSync('/proc')) {
+      if (!/^\d+$/.test(d)) continue;
+      try {
+        const st = readFileSync(`/proc/${d}/stat`, 'utf8');
+        const ppid = +st.slice(st.lastIndexOf(')') + 2).split(' ')[1];
+        if (!kids.has(ppid)) kids.set(ppid, []);
+        kids.get(ppid).push(+d);
+      } catch {}
+    }
+    let kb = 0;
+    const walk = pid => {
+      try { kb += +(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${pid}/status`, 'utf8')) || [0, 0])[1]; } catch {}
+      for (const k of kids.get(pid) || []) walk(k);
+    };
+    walk(rootPid);
+    return kb / 1024;
+  } catch { return null; }
+}
+
 async function pass(screencast) {
   const showDir = mkdtempSync(path.join(tmpdir(), 'slideshow-show-'));
   const port = 20000 + Math.floor(Math.random() * 20000);
@@ -179,10 +204,11 @@ async function pass(screencast) {
   // exercise per-slide overrides: fit-to-slide, trim, 2x, photo-only
   const firstOf = cat => items.find(it => it.cat === cat);
   const vids = items.filter(it => it.cat === 'video');
-  await post('/api/override', { id: vids[0].id, patch: { speed: 'fit' } });
-  await post('/api/override', { id: vids[1].id, patch: { trim: [0.5, 2.5] } });
-  await post('/api/override', { id: firstOf('videoPortrait').id, patch: { speed: '2' } });
-  await post('/api/override', { id: firstOf('live').id, patch: { media: 'photo' } });
+  const ovr = (it, patch) => it && post('/api/override', { id: it.id, patch });
+  await ovr(vids[0], { speed: 'fit' });
+  await ovr(vids[1], { trim: [0.5, 2.5] });
+  await ovr(firstOf('videoPortrait'), { speed: '2' });
+  await ovr(firstOf('live'), { media: 'photo' });
 
   const order = (await (await fetch(base + '/api/slides')).json()).slides.map(s => s.id);
   const stalls = new Set(items.filter(it => it.cat === 'bad-stall' || it.cat === 'bad-stallVideo').map(it => it.id));
@@ -193,6 +219,9 @@ async function pass(screencast) {
     executablePath: process.env.CHROMIUM_PATH || undefined,
     args: ['--autoplay-policy=no-user-gesture-required'],
   });
+  const rss = [];
+  const bpid = browser.process && browser.process() ? browser.process().pid : null;
+  const rssTimer = bpid ? setInterval(() => { const v = browserRssMB(bpid); if (v) rss.push(v); }, 1000) : null;
   const ctx = await browser.newContext({ viewport: { width: VW, height: VH }, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   await page.route('**/*', route => {
@@ -271,10 +300,11 @@ async function pass(screencast) {
   await cdp.send('Page.stopScreencast').catch(() => {});
   const H = await page.evaluate(() => window.__H);
   const wallSeconds = Math.round((Date.now() - t0) / 1000);
+  clearInterval(rssTimer);
   await browser.close();
   server.kill();
   if (!KEEP) rmSync(showDir, { recursive: true, force: true });
-  return { H, shots, interventions, errors, order, wallSeconds };
+  return { H, shots, interventions, errors, order, wallSeconds, rss };
 }
 
 const PASS = opt('pass', 'both');
@@ -392,6 +422,7 @@ const report = {
     steady: { n: steadyDeltas.length, p50: r1(pct(steadyDeltas, 0.5)), p99: r1(pct(steadyDeltas, 0.99)), max: r1(Math.max(...steadyDeltas)), over33: steadyDeltas.filter(d => d > 33.4).length },
     longAnimationFrames: A.H.loaf.filter(l => l[0] > A.startT).length,
   } : null,
+  memoryMB: T.rss && T.rss.length ? { peak: Math.round(Math.max(...T.rss)), median: Math.round(median(T.rss)) } : null,
   screen: screen ? {
     screencastFrames: runShots.length,
     transitionFrameGapP99: r1(pct(transShotGaps, 0.99)),
@@ -423,6 +454,7 @@ if (f) console.log(`transition frames  n=${f.transition.n}  p50=${f.transition.p
 steady frames      p50=${f.steady.p50}  p99=${f.steady.p99}  max=${f.steady.max} ms  >33ms=${f.steady.over33}   long-animation-frames=${f.longAnimationFrames}`);
 if (s) console.log(`screen             ${s.screencastFrames} frames  BLANK=${s.blankFrames} (${s.blankMs} ms; ${s.blankFramesInTransitions} in ${s.transitionsWithBlank} transitions)
 dips               ${s.dipTransitions}/${s.dipMeasured} transitions dip <70%  median=${s.dipMedian}  worst=${s.dipWorst}`);
+if (report.memoryMB) console.log(`browser memory     peak ${report.memoryMB.peak} MB, median ${report.memoryMB.median} MB (RSS, all processes)`);
 console.log(`coverage           frames <50% ready=${report.coverage.framesBelowHalf}  empty=${report.coverage.framesEmpty}
 interventions      ${report.interventions}   page errors=${errors.length}${errors.length ? '\n  ' + errors.slice(0, 3).join('\n  ') : ''}
 bad files:`);
