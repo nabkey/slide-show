@@ -26,9 +26,11 @@ anywhere.
 - **Per-slide overrides** — change one photo's date, hide it, pick which still
   frame a video uses, trim a clip, set playback speed (½× / 1× / 2× / **Fit to
   slide**), or choose photo-vs-video for that slide only.
-- **Library view** (press **L**) — a thumbnail grid of everything, with filters
-  (Photos / Live / Videos / Uploads / Hidden), an edit modal per item, a hide
-  toggle, and a play button to start the show from any item.
+- **Library view** (press **L**) — a fast, keyboard-first culling grid of
+  everything: filters (Photos / Live / Videos / Uploads / Hidden), automatic
+  **Look-alikes** (bursts and duplicates grouped, sharpest shot starred) and
+  **Check dates** (dates that look wrong), bulk date fixes, an edit modal per
+  item, a loupe, and play-from-here. See [The Library](#the-library) below.
 - **Uploads** — add photos and videos from the settings panel; HEIC is converted
   and non-web-friendly video is transcoded to H.264 MP4 automatically. (Originals
   go into `uploads/`.)
@@ -78,6 +80,62 @@ After that it's cached, so restarts are instant.
 | **F**                   | Toggle fullscreen                                |
 | **L**                   | Open / close the Library                         |
 | **Esc**                 | Close Library or edit modal; exit fullscreen     |
+
+Inside the Library the keyboard drives everything — see the next section.
+
+## The Library
+
+Press **L** (or *Browse library…* in the gear panel). It is built for the night
+before the party: thousands of photos, culled and dated in well under an hour,
+without touching the mouse. It opens on the photo the show is currently on.
+
+The grid is grouped by month (quiet stretches share one heading). A
+highlighted **cursor** marks the current photo; every action applies to it, or
+to the **selection** if you've made one. Hiding never deletes anything: it is the
+same non-destructive override as the *Hide from show* button, and **⌘/Ctrl Z**
+undoes it.
+
+| Key                       | Does                                                        |
+|---------------------------|-------------------------------------------------------------|
+| **← → ↑ ↓**, Home / End, PgUp / PgDn | Move the cursor (**Shift** + any of them extends a selection) |
+| **X** (or H, Delete)      | Hide from the show and advance to the next photo            |
+| **P** (or K)              | Keep (un-hide) and advance                                  |
+| **⌘/Ctrl Z**              | Undo the last action (hides, keeps, date changes)           |
+| **Space**                 | Loupe: the photo large; arrows / X / P keep working         |
+| **Enter** (or E)          | Edit modal for the cursor photo; **← →** inside it step to the neighbours |
+| **Shift Enter**           | Play the show from here                                     |
+| **G**                     | In a look-alike group: keep this one, hide the rest, jump to the next group |
+| **S**                     | Select the whole section (a month, a look-alike group, a date problem) |
+| **⌘/Ctrl A**              | Select everything in the current filter                     |
+| **D**                     | Set the date of the selection: `1994-07-15`, `June 1994`, `summer 1994`, `Christmas 2003`, `1994` |
+| **T**                     | Shift the selection's dates: `+1y`, `-3h`, `+2d 6h`, `-18mo` |
+| **M**                     | Use the suggested date (out-of-sequence files)              |
+| **J**                     | Jump to a date: `2012`, `2012-07`, `June 2012`              |
+| **[ ]**                   | Previous / next section                                     |
+| **1–8**                   | Filters: All, Photos, Live, Videos, Uploads, Hidden, Look-alikes, Check dates |
+| **– / =**                 | Smaller / larger thumbnails                                 |
+| **Esc**                   | Close the loupe → clear the selection → close the Library   |
+
+With the mouse: click a photo to edit it, **Shift**-click / **⌘/Ctrl**-click to
+select, *select* on a section heading, and the hover buttons hide or play from a
+photo.
+
+**Look-alikes** (key **7**) — after the Library opens, every thumbnail gets a
+small perceptual fingerprint (a difference hash, plus colour and sharpness) in the
+background. Near-identical shots — bursts a few seconds apart, re-saved copies —
+are grouped, and the sharpest of each group is starred (★) and lands under the
+cursor. Pick the one you want and press **G**. Fingerprints are remembered in
+the browser, so later visits are instant; the very first scan has to wait for the
+server to make every thumbnail.
+
+**Check dates** (key **8**) lists photos whose date is probably wrong, the way an
+archivist would spot them: dated in the future; camera-default dates (1970,
+2000-01-01…) or no usable date; many files sharing one exact timestamp (a
+scanner or a copy stamped them all); and files whose date jumps out of sequence
+with their neighbouring file numbers (with a suggested date — press **M**). Press
+**S** then **D** to give a whole scanned batch one date (they stay in their
+scan order), or **T** to shift a run shot on a camera with the wrong clock. Dates
+you've set yourself are trusted and leave the list.
 | Click left / right edge | Previous / next slide                            |
 | Settings gear (top-right) | Open the settings panel                        |
 
@@ -110,11 +168,25 @@ there's nothing personal hardcoded:
   empty if you aren't using age captions) and **Appearance** (accent, background,
   and caption colors plus the caption font). Changes apply live. Fonts are drawn
   from those installed on the machine, so it stays fully offline.
-- **Hidden** — photos you've hidden, with a tap to bring them back.
+- **Hidden** — photos you've hidden, with a tap to bring them back (or *Review in library…* to go through them in the Library's Hidden filter).
 
 The most-used controls are also on the **control bar** at the bottom of the
 screen (previous / play-pause / next, seconds per slide, and fullscreen); both
 it and the gear fade out when the mouse holds still.
+
+## Testing the library at scale
+
+`test/library-bench.mjs` builds ~3,000 small fixture images with ffmpeg (bursts,
+re-saves and planted bad dates; written to a temp folder, never committed), boots
+the real server on them, and drives the real UI in Chromium via Playwright: it
+times opening and scrolling the Library, runs a keyboard-only triage pass, checks
+the existing features still work, and verifies every override through the HTTP
+API. Playwright is a dev-only tool here (a global install works); the app itself
+has no dependencies.
+
+```sh
+node test/library-bench.mjs --label mine   # report + screenshots in test/out/
+```
 
 ## Notes
 
