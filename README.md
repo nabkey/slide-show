@@ -56,7 +56,9 @@ brew install exiftool ffmpeg
 1. Put your photos and videos in this folder (next to `index.html`).
 2. Start it:
    - **Easiest:** double-click **`Start Slideshow.command`** in Finder. It launches
-     the server and opens your browser.
+     the server and opens your browser. Leave its Terminal window open during the
+     party: while it's open the Mac and display won't sleep, and if the server ever
+     stops it is restarted automatically.
    - **From a terminal:**
      ```sh
      bun server.ts          # then open http://127.0.0.1:8765
@@ -115,6 +117,24 @@ there's nothing personal hardcoded:
 The most-used controls are also on the **control bar** at the bottom of the
 screen (previous / play-pause / next, seconds per slide, and fullscreen); both
 it and the gear fade out when the mouse holds still.
+
+## Running unattended
+
+The show is built to run for hours with nobody at the laptop:
+
+- An unreadable photo or video is skipped silently — it never appears on screen.
+- If the server stops or restarts, the current slide stays up and the page picks
+  up where it left off by itself once the server is back (no reload needed).
+- A watchdog restarts the slide timer if anything ever stalls it, and the page
+  holds a screen wake lock (the launcher also runs `caffeinate`).
+- If the library, the per-slide editor or the settings panel is left open, it
+  closes itself after 5 minutes without mouse/keyboard input so the show resumes.
+  (Pause is the exception: a paused show stays paused until you resume it.)
+
+`test/` holds a dev-only soak and fault-injection harness (Playwright + ffmpeg,
+never needed to run the show): `node test/soak.mjs` simulates a six-hour show and
+checks memory stays flat; `node test/chaos.mjs` kills/freezes the server, feeds it
+corrupt files, fills the disk, locks the database, and so on.
 
 ## Notes
 
