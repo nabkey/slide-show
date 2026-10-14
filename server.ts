@@ -9,6 +9,7 @@
 //   GET  /api/slides                  -> { slides, overrides, settings }
 //   POST /api/settings                -> { patch: {media?, duration?, transition?, caption?, birthday?, accent?, bg?, captionColor?, captionFont?} }
 //   POST /api/override                -> { id, patch: {hidden?, date?, media?, trim?} }
+//   POST /api/overrides               -> { items: [{ id, patch }, ...] } — many overrides, one transaction
 //   POST /api/upload?name=<filename>  -> raw file body; saved to uploads/
 //   POST /api/remove-upload           -> { id }; moved to uploads/_removed/
 //   POST /api/rescan                  -> re-scan the folder
@@ -473,6 +474,20 @@ try {
           const { id, patch } = await req.json();
           applyPatch(id, patch ?? {});
           return json({ ok: true });
+        }
+        if (p === '/api/overrides') {
+          // batch form of /api/override (library bulk edits); body may arrive as a
+          // sendBeacon text/plain payload, so parse it regardless of content type
+          const body = JSON.parse((await req.text()) || '{}');
+          if (!Array.isArray(body.items)) return json({ ok: false, error: 'items must be an array' }, 400);
+          const applyAll = db.transaction((items: Array<{ id?: unknown; patch?: Patch }>) => {
+            let n = 0;
+            for (const it of items) {
+              if (it && typeof it.id === 'string') { applyPatch(it.id, it.patch ?? {}); n++; }
+            }
+            return n;
+          });
+          return json({ ok: true, count: applyAll(body.items) });
         }
         if (p === '/api/poster') {
           const { id, time } = await req.json();
