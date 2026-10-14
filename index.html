@@ -872,11 +872,25 @@
 <div id="empty">
   <div class="inner">
     <h2 id="emptyTitle">The projector is off</h2>
-    <p id="emptyBody">Couldn&rsquo;t reach the slideshow server. Double-click <code>Start Slideshow.command</code> in the photo folder (or run <code>bun server.ts</code>), then reload this page.</p>
+    <p id="emptyBody">Couldn&rsquo;t reach the slideshow server. Double-click <code>Start Slideshow.command</code> in the photo folder (or run <code>bun server.ts</code>) &mdash; this page will pick it up by itself.</p>
   </div>
 </div>
 
 <script>
+/* ---------- Unattended-show safety net ----------
+   Nobody is watching the laptop, so nothing may throw the show off: every
+   uncaught error is logged (and kept for diagnostics) instead of being lost,
+   and the watchdog further down notices if the slide timer ever stops. */
+window.__slideshow = { errors: [], wakeLock: 'pending', offline: false, skipped: 0, watchdogKicks: 0, reconnects: 0 };
+function logFault(kind, detail) {
+  const errs = window.__slideshow.errors;
+  errs.push({ t: new Date().toISOString(), kind, detail: String(detail && (detail.stack || detail.message) || detail) });
+  if (errs.length > 50) errs.shift();
+  console.warn('[slideshow]', kind, detail);
+}
+window.addEventListener('error', e => { if (e instanceof ErrorEvent) logFault('error', e.error || e.message); });
+window.addEventListener('unhandledrejection', e => logFault('unhandled rejection', e.reason));
+
 (async () => {
   const $ = id => document.getElementById(id);
   const layers = [$('layerA'), $('layerB')];
@@ -950,24 +964,44 @@
   const hideEmpty = () => { $('empty').style.display = 'none'; };
 
   /* ---------- Server data ---------- */
+  // GETs throw on failure (callers need the data); POSTs always resolve, with
+  // { ok: false, error } when the server is down, errors, or answers non-JSON.
+  const timeoutSignal = ms => (window.AbortSignal && AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
   async function api(path, body) {
-    const res = await fetch(path, body === undefined ? undefined : {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return res.json();
+    let res, data = null;
+    try {
+      res = await fetch(path, body === undefined ? { cache: 'no-store', signal: timeoutSignal(15000) } : {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      try { data = await res.json(); } catch (e) {}
+    } catch (e) {
+      if (body === undefined) throw e;
+      return { ok: false, error: 'server unreachable' };
+    }
+    if (res.ok && data && typeof data === 'object') return data;
+    if (body === undefined) throw new Error(`${path}: HTTP ${res.status}`);
+    return { ok: false, error: (data && data.error) || `server said ${res.status}` };
   }
 
   let ALL = [], overrides = {}, serverSettings = {};
   try {
     const data = await api('/api/slides');
+    if (!Array.isArray(data.slides)) throw new Error('bad /api/slides response');
     ALL = data.slides;
     overrides = data.overrides || {};
     serverSettings = data.settings || {};
   } catch (e) {
     $('bar').style.display = 'none'; // nothing to control if the server is down
     showEmpty('The projector is off');
+    // keep knocking: start over cleanly the moment the server answers
+    const retry = setInterval(async () => {
+      try {
+        const r = await fetch('/api/slides', { cache: 'no-store', signal: timeoutSignal(3000) });
+        if (r.ok) { clearInterval(retry); location.reload(); }
+      } catch (err) {}
+    }, 2000);
     return;
   }
   if (!ALL.length) {
@@ -1044,6 +1078,10 @@
   let timer = null;
   let paused = false;
   let seq = 0;
+  let offline = false;          // server unreachable: hold the current slide
+  let lastShownAt = Date.now(); // watchdog: when the show last moved
+  let shownCount = 0;
+  let mediaFails = 0;           // consecutive unreadable files
   const cur = () => list[idx];
   const effDate = s => ov(s.id).date || s.d;
   // cache-bust poster frames so a re-extracted frame shows up immediately
@@ -1094,7 +1132,7 @@
 
   function schedule() {
     clearTimeout(timer);
-    if (!paused && !editing()) timer = setTimeout(() => advance(1), settings.duration * 1000);
+    if (!paused && !offline && !editing()) timer = setTimeout(() => advance(1), settings.duration * 1000);
   }
 
   function preload(i) {
@@ -1177,9 +1215,13 @@
     clearLayer(back);
     const el = buildMedia(slide);
     back.appendChild(el);
+    back._seq = mySeq;
 
     const go = () => {
       if (mySeq !== seq) return;
+      lastShownAt = Date.now();
+      shownCount++;
+      mediaFails = 0;
       reveal(back, el, dir);
       updateCaption(slide);
       updateCounter();
@@ -1188,16 +1230,19 @@
       schedule();
     };
 
+    // never put a broken file on screen: skip past it, or hold if the server is gone
+    const fail = () => mediaFailed(mySeq, slide, i, dir);
     if (el.tagName === 'VIDEO') {
       let started = false;
       const once = () => { if (!started) { started = true; go(); } };
       el.addEventListener('loadeddata', once);
+      el.addEventListener('error', () => { if (!started) started = true; fail(); });
       setTimeout(once, 900); // don't stall the show on a slow video
     } else if (el.complete) {
-      go();
+      if (el.naturalWidth) go(); else fail();
     } else {
       el.onload = go;
-      el.onerror = go; // skip gracefully past unreadable files
+      el.onerror = fail;
     }
   }
 
@@ -1240,8 +1285,10 @@
     active = 1 - active;
 
     const retired = front;
+    const retiredSeq = retired._seq;
     setTimeout(() => {
-      if (retired !== layers[active]) {
+      // skip if a newer slide has been built into this layer since (rapid skips)
+      if (retired !== layers[active] && retired._seq === retiredSeq) {
         clearLayer(retired);
         retired.style.transform = '';
       }
@@ -1370,12 +1417,20 @@
   /* ---------- Panel: uploads & rescan ---------- */
   async function refreshFromServer() {
     const before = cur();
-    const data = await api('/api/slides');
+    let data;
+    try {
+      data = await api('/api/slides');
+      if (!Array.isArray(data.slides)) throw new Error('bad /api/slides response');
+    } catch (e) {
+      logFault('refresh failed', e);
+      return false;
+    }
     ALL = data.slides;
     overrides = data.overrides || {};
     const match = before && ALL.find(s => s.id === before.id);
     rebuildKeeping(match || null);
     if (!match && list.length && idx < 0) show(0, 1);
+    return true;
   }
 
   $('upBtn').addEventListener('click', () => $('upInput').click());
@@ -1412,7 +1467,7 @@
     $('upStatus').textContent = 'Rescanning…';
     const r = await api('/api/rescan', {});
     await refreshFromServer();
-    $('upStatus').textContent = `Folder rescanned — ${r.count} slides.`;
+    $('upStatus').textContent = r.ok ? `Folder rescanned — ${r.count} slides.` : `Rescan failed (${r.error}).`;
   });
 
   /* ---------- Panel: this-slide tab ---------- */
@@ -1978,6 +2033,115 @@
     document.addEventListener(ev, wake, { passive: true });
   }
   wake();
+
+  /* ---------- Unattended safety: reconnect, watchdog, wake lock ---------- */
+  async function serverUp() {
+    try {
+      const r = await fetch('/api/health', { cache: 'no-store', signal: timeoutSignal(3000) });
+      return r.ok;
+    } catch (e) { return false; }
+  }
+
+  // A photo/video failed to load. If the server is still there the file itself
+  // is bad: skip it without ever revealing it. If the server is gone, hold the
+  // current slide and retry this one when it comes back.
+  async function mediaFailed(mySeq, slide, i, dir) {
+    if (mySeq !== seq) return;
+    const up = await serverUp();
+    if (mySeq !== seq) return;
+    if (!up) { goOffline(dir); return; }
+    window.__slideshow.skipped++;
+    logFault('skipped unreadable file', slide.id);
+    if (++mediaFails >= list.length) {
+      // everything is failing: wait a slide's length before trying again
+      mediaFails = 0;
+      clearTimeout(timer);
+      timer = setTimeout(() => show(i + dir, dir), settings.duration * 1000);
+      return;
+    }
+    show(i + dir, dir);
+  }
+
+  let retryDir = 1, shownWhenLost = 0;
+  function goOffline(dir) {
+    retryDir = dir || 1;
+    if (offline) return;
+    offline = window.__slideshow.offline = true;
+    shownWhenLost = shownCount;
+    clearTimeout(timer);
+    logFault('server unreachable', 'holding the current slide until it is back');
+    const poll = async () => {
+      if (!(await serverUp())) { setTimeout(poll, 2000); return; }
+      offline = window.__slideshow.offline = false;
+      window.__slideshow.reconnects++;
+      logFault('server back', 'resuming');
+      await refreshFromServer(); // pick up anything that changed; keeps the current slide
+      if (!list.length) return;
+      // a slide that was still loading when we lost the server gets retried
+      if (shownCount === shownWhenLost) show(idx, retryDir); else schedule();
+    };
+    setTimeout(poll, 1000);
+  }
+
+  // Screen wake lock (the launcher's `caffeinate` is the belt to these braces).
+  // The browser drops the lock whenever the tab is hidden; take it back.
+  let wakeSentinel = null, wakeRequesting = false;
+  async function keepAwake() {
+    if (!navigator.wakeLock) { window.__slideshow.wakeLock = 'unsupported'; return; }
+    if (document.visibilityState !== 'visible' || wakeRequesting || (wakeSentinel && !wakeSentinel.released)) return;
+    wakeRequesting = true;
+    try {
+      wakeSentinel = await navigator.wakeLock.request('screen');
+      window.__slideshow.wakeLock = 'held';
+      wakeSentinel.addEventListener('release', () => { window.__slideshow.wakeLock = 'released'; });
+    } catch (e) {
+      window.__slideshow.wakeLock = 'unavailable: ' + e.name;
+    } finally { wakeRequesting = false; }
+  }
+  document.addEventListener('visibilitychange', keepAwake);
+
+  // Overlays left open hold the show (library, per-slide editor). If nobody has
+  // touched anything for a while, put them away so the show carries on.
+  const IDLE_TIDY_MS = 5 * 60 * 1000;
+  let lastInputAt = Date.now();
+  for (const ev of ['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel']) {
+    document.addEventListener(ev, () => { lastInputAt = Date.now(); }, { passive: true, capture: true });
+  }
+  function tidyIfIdle() {
+    if (Date.now() - lastInputAt < IDLE_TIDY_MS) return;
+    if (editModal.classList.contains('open')) closeEditor();
+    if (library.classList.contains('open')) closeLibrary();
+    if (panel.classList.contains('open')) togglePanel(false);
+  }
+
+  // Watchdog: if the slide clock should be running but nothing has moved for a
+  // slide's length plus grace (an exception broke the chain, a load hung), kick
+  // it. Never reloads the page; checks the server first so a frozen server
+  // means "hold", not "skip through everything".
+  const WATCHDOG_GRACE_MS = 5000;
+  let kicking = false;
+  setInterval(async () => {
+    try {
+      keepAwake();
+      tidyIfIdle();
+      if (paused || offline || editing() || !list.length || document.hidden || kicking) {
+        lastShownAt = Date.now(); // the clock only runs while the show should be moving
+        return;
+      }
+      if (Date.now() - lastShownAt < settings.duration * 1000 + WATCHDOG_GRACE_MS) return;
+      kicking = true;
+      window.__slideshow.watchdogKicks++;
+      logFault('watchdog', `no slide change for ${Math.round((Date.now() - lastShownAt) / 1000)} s — restarting the slide clock`);
+      const up = await serverUp();
+      kicking = false;
+      lastShownAt = Date.now();
+      if (!up) goOffline(1); else advance(1);
+    } catch (e) {
+      kicking = false;
+      logFault('watchdog error', e);
+    }
+  }, 2000);
+  keepAwake();
 
   /* ---------- Go ---------- */
   rebuild();
