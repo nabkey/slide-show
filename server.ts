@@ -22,6 +22,11 @@
 // `dateConfidence` ("high" | "medium" | "low") so the UI can flag dates the host
 // should double-check. Metadata is read once per file and cached in
 // slideshow.db, keyed by size+mtime, so warm restarts spawn no processes.
+//   GET  /api/health                  -> { ok } (the page polls this to ride out restarts)
+//
+// Only answers requests addressed to 127.0.0.1/localhost on this port, and only
+// accepts writes from this page's own origin (blocks DNS rebinding and CSRF
+// from any other web page open in the same browser).
 
 import { Database } from 'bun:sqlite';
 import {
@@ -139,6 +144,10 @@ const thumbLimit = limiter(CORES);
 // (Default rollback journal, not WAL: the README tells people to copy
 // slideshow.db on its own, which must always hold every edit.)
 const db = new Database(path.join(ROOT, 'slideshow.db'));
+// If something else holds the db (a second copy, a SQLite browser), wait a
+// moment instead of failing instantly; WAL keeps reads working during a write lock.
+db.run('PRAGMA busy_timeout = 1500');
+try { db.run('PRAGMA journal_mode = WAL'); } catch (err) { console.error('could not enable WAL:', err); }
 db.run(`CREATE TABLE IF NOT EXISTS exif_cache (
   path TEXT PRIMARY KEY,
   sig  TEXT NOT NULL,
@@ -1145,8 +1154,44 @@ const json = (data: unknown, status = 200) =>
 const ingestStatus = () => ({
   pending: jobs.size, done: jobsDone, spawns: spawnCount, scanMs: lastScan.ms, files: lastScan.files, probed: lastScan.probed,
 });
+class BadRequest extends Error {}
+
+async function readJson(req: Request): Promise<any> {
+  try {
+    const body = await req.json();
+    if (body && typeof body === 'object') return body;
+  } catch {}
+  throw new BadRequest('Body must be a JSON object.');
+}
+
+const requireId = (id: unknown): string => {
+  if (typeof id !== 'string' || !id || id.length > 1024) throw new BadRequest('Missing or invalid "id".');
+  return id;
+};
+
+// Requests must be addressed to us by a loopback name (a DNS-rebinding page
+// sends its own hostname), and writes must come from our own origin: browsers
+// attach Origin / Sec-Fetch-Site to cross-site requests, even no-cors ones.
+const LOCAL_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+function forbidden(req: Request): boolean {
+  const host = req.headers.get('host');
+  if (host && !LOCAL_HOSTS.has(host.toLowerCase())) return true;
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    const origin = req.headers.get('origin');
+    if (origin && !LOCAL_HOSTS.has(origin.toLowerCase().replace(/^http:\/\//, ''))) return true;
+    const site = req.headers.get('sec-fetch-site');
+    if (site && site !== 'same-origin' && site !== 'none') return true;
+  }
+  return false;
+}
+
+const isDiskFull = (err: any) => /ENOSPC|EDQUOT|EFBIG/.test(String(err?.code ?? '') + String(err));
+const tryUnlink = (p: string) => { try { if (existsSync(p)) unlinkSync(p); } catch {} };
 
 async function serveStatic(urlPath: string, req: Request): Promise<Response> {
+  if (urlPath.includes('\0')) return new Response('Bad request', { status: 400 });
+  // no dotfiles/dot-dirs (.git, half-written .incoming-* uploads, ...)
+  if (urlPath.split('/').some(seg => seg.startsWith('.'))) return new Response('Not found', { status: 404 });
   const full = path.normalize(path.join(ROOT, urlPath));
   if (!full.startsWith(ROOT + path.sep)) return new Response('Forbidden', { status: 403 });
   if (/\.(db|db-wal|db-shm|ts)$/.test(full)) return new Response('Forbidden', { status: 403 });
@@ -1212,13 +1257,26 @@ async function handleUpload(req: Request, url: URL): Promise<Response> {
 
   mkdirSync(UPLOADS, { recursive: true });
   const stem = name.slice(0, -ext.length) || 'upload';
-  let dest: string;
+  let dest = '';
 
+  // Bytes are streamed into a hidden temp file (the scanner and static server
+  // skip dotfiles) and renamed into place only once complete, so a failed or
+  // disk-full upload never leaves a half-written photo in the show.
+  const tmp = path.join(UPLOADS, `.incoming-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  const diskFull = () => json({ ok: false, error: 'The disk is full — free some space and try again.' }, 507);
+  try {
+    const written = req.body ? await Bun.write(tmp, new Response(req.body)) : 0;
+    if (!written) { tryUnlink(tmp); return json({ ok: false, error: 'Empty file.' }, 400); }
+  } catch (err) {
+    tryUnlink(tmp);
+    if (isDiskFull(err)) return diskFull();
+    throw err;
+  }
+
+  try {
   if (isVideo) {
-    // land the raw bytes, then keep as-is only if it's already browser-friendly
-    // (H.264 in MP4); everything else is transcoded via ffmpeg
-    const tmp = path.join(UPLOADS, `.incoming-${Date.now()}${ext}`);
-    await Bun.write(tmp, await req.arrayBuffer());
+    // keep as-is only if it's already browser-friendly (H.264 in MP4);
+    // everything else is transcoded via ffmpeg
     const codec = await probeVideoCodec(tmp);
     if (!codec) {
       unlinkSync(tmp);
@@ -1237,13 +1295,18 @@ async function handleUpload(req: Request, url: URL): Promise<Response> {
       );
       unlinkSync(tmp);
       if (code !== 0) {
-        if (existsSync(dest)) unlinkSync(dest);
+        tryUnlink(dest);
         return json({ ok: false, error: `Couldn't convert ${name} (codec: ${codec}).` }, 415);
       }
     }
   } else {
     dest = freeDest(stem, ext);
-    await Bun.write(dest, await req.arrayBuffer());
+    renameSync(tmp, dest);
+  }
+  } catch (err) {
+    tryUnlink(tmp);
+    if (isDiskFull(err)) { if (dest) tryUnlink(dest); return diskFull(); }
+    throw err;
   }
 
   await rescan();
@@ -1272,6 +1335,16 @@ function removeUpload(id: string): Response {
 
 // ---------- main ----------
 
+function openBrowser() {
+  try { Bun.spawn(['open', `http://127.0.0.1:${PORT}`]); } catch (err) { console.error('could not open a browser:', err); }
+}
+
+// A stray rejection or exception (a helper process that vanished, a file deleted
+// mid-scan) is logged, not fatal: the show must keep being served. The launcher
+// restarts the process if it dies anyway.
+process.on('unhandledRejection', err => console.error('unhandled rejection:', err));
+process.on('uncaughtException', err => console.error('uncaught exception:', err));
+
 logMissingTools();
 await rescan();
 
@@ -1282,13 +1355,42 @@ try {
     port: PORT,
     maxRequestBodySize: MAX_UPLOAD, // Bun's default is 128 MB — too small for phone videos
     idleTimeout: 120,
+    // never let one bad request take the server down: log it, answer 500, carry on
+    error(err) {
+      console.error('request failed:', err);
+      return json({ ok: false, error: 'Server error.' }, 500);
+    },
     async fetch(req) {
+      if (forbidden(req)) return new Response('Forbidden', { status: 403 });
       const url = new URL(req.url);
       let p: string;
       try { p = decodeURIComponent(url.pathname); } catch { return new Response('Bad request', { status: 400 }); }
+      try {
+        return await route(req, url, p);
+      } catch (err: any) {
+        if (err instanceof BadRequest) return json({ ok: false, error: err.message }, 400);
+        if (/SQLITE_BUSY|database is locked/i.test(String(err?.code ?? '') + String(err))) {
+          console.error(`${req.method} ${p}: database is locked by another process`);
+          return json({ ok: false, error: 'Database is busy — try again.' }, 503);
+        }
+        console.error(`${req.method} ${p} failed:`, err);
+        return json({ ok: false, error: 'Server error.' }, 500);
+      }
+    },
+  });
+} catch (err: any) {
+  if (err?.code === 'EADDRINUSE') {
+    console.log(`Already running at http://127.0.0.1:${PORT}`);
+    if (process.argv.includes('--open')) openBrowser();
+    process.exit(0);
+  }
+  throw err;
+}
 
+async function route(req: Request, url: URL, p: string): Promise<Response> {
       if (req.method === 'GET') {
         if (p === '/' || p === '/index.html') return new Response(Bun.file(path.join(APP_DIR, 'index.html')));
+        if (p === '/api/health') return json({ ok: true });
         if (p === '/api/slides') {
           return json({ slides, overrides: allOverrides(), settings: allSettings(), skipped, ingest: ingestStatus() });
         }
@@ -1316,7 +1418,6 @@ try {
         return serveStatic(p, req);
       }
       if (req.method === 'POST') {
-        try {
           if (p === '/api/upload') {
             const name = url.searchParams.get('name') ?? '?';
             const mb = (Number(req.headers.get('content-length') ?? 0) / 1048576).toFixed(1);
@@ -1324,20 +1425,21 @@ try {
             return await handleUpload(req, url);
           }
           if (p === '/api/settings') {
-            const { patch } = await req.json();
-            applySettings(patch ?? {});
+            const { patch } = await readJson(req);
+            applySettings(patch && typeof patch === 'object' ? patch : {});
             return json({ ok: true, settings: allSettings() });
           }
           if (p === '/api/override') {
-            const { id, patch } = await req.json();
-            applyPatch(id, patch ?? {});
+            const { id, patch } = await readJson(req);
+            applyPatch(requireId(id), patch && typeof patch === 'object' ? patch : {});
             return json({ ok: true });
           }
           if (p === '/api/overrides') {
             // batch form of /api/override (library bulk edits); body may arrive as a
             // sendBeacon text/plain payload, so parse it regardless of content type
-            const body = JSON.parse((await req.text()) || '{}');
-            if (!Array.isArray(body.items)) return json({ ok: false, error: 'items must be an array' }, 400);
+            let body: any;
+            try { body = JSON.parse((await req.text()) || '{}'); } catch { throw new BadRequest('Body must be JSON.'); }
+            if (!Array.isArray(body?.items)) throw new BadRequest('items must be an array');
             const applyAll = db.transaction((items: Array<{ id?: unknown; patch?: Patch }>) => {
               let n = 0;
               for (const it of items) {
@@ -1348,7 +1450,7 @@ try {
             return json({ ok: true, count: applyAll(body.items) });
           }
           if (p === '/api/poster') {
-            const { id, time } = await req.json();
+            const { id, time } = await readJson(req);
             const slide = slides.find(s => s.id === id);
             if (!slide?.solo || !slide.vid) return json({ ok: false, error: 'Not a standalone video slide.' }, 400);
             const poster = posterFor(slide.vid);
@@ -1359,8 +1461,8 @@ try {
             return json({ ok: true });
           }
           if (p === '/api/remove-upload') {
-            const { id } = await req.json();
-            const res = removeUpload(id);
+            const { id } = await readJson(req);
+            const res = removeUpload(requireId(id));
             if (res.status === 200) await rescan();
             return res;
           }
@@ -1368,23 +1470,10 @@ try {
             await rescan();
             return json({ ok: true, count: slides.length, skipped: skipped.length });
           }
-        } catch (err) {
-          console.error(`${p} failed:`, err);
-          return json({ ok: false, error: String(err) }, 500);
-        }
       }
       return new Response('Not found', { status: 404 });
-    },
-  });
-} catch (err: any) {
-  if (err?.code === 'EADDRINUSE') {
-    console.log(`Already running at http://127.0.0.1:${PORT}`);
-    if (process.argv.includes('--open')) Bun.spawn(['open', `http://127.0.0.1:${PORT}`]);
-    process.exit(0);
-  }
-  throw err;
 }
 
 const paired = slides.filter(s => s.vid && !s.solo).length;
 console.log(`Slideshow ready: http://127.0.0.1:${PORT} — ${slides.length} slides (${paired} with Live Photo video)`);
-if (process.argv.includes('--open')) Bun.spawn(['open', `http://127.0.0.1:${PORT}`]);
+if (process.argv.includes('--open')) openBrowser();
