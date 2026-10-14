@@ -854,6 +854,7 @@
       <button data-f="videos">Videos</button>
       <button data-f="uploads">Uploads</button>
       <button data-f="hidden">Hidden</button>
+      <button data-f="unsure" title="Dates the server could only guess (no camera metadata)">Check dates</button>
     </div>
     <div class="libCount" id="libCount"></div>
     <button id="libClose" aria-label="Close">&times;</button>
@@ -883,7 +884,7 @@
   const PLAY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg>';
   const PAUSE_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="3.6" height="14" rx="1"/><rect x="13.9" y="5" width="3.6" height="14" rx="1"/></svg>';
   const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  const src = p => encodeURI('/' + p);
+  const src = p => '/' + p.split('/').map(encodeURIComponent).join('/'); // names may contain # or ?
 
   /* ---------- Typeable date field ---------- */
   // Returns 'YYYY-MM-DD' for a valid date, '' for empty, or null if unparseable.
@@ -1738,6 +1739,7 @@
         case 'videos': return !!s.solo;
         case 'uploads': return s.id.startsWith('uploads/');
         case 'hidden': return !!o.hidden;
+        case 'unsure': return s.dateConfidence === 'low' && !o.date;
         default: return true;
       }
     });
@@ -1752,6 +1754,7 @@
         s.solo ? 'video' : s.vid ? 'live' : null,
         s.id.startsWith('uploads/') ? 'upload' : null,
         o.hidden ? 'hidden' : null,
+        s.dateConfidence === 'low' && !o.date ? 'date?' : null,
       ].filter(Boolean).map(b => `<span class="badge">${b}</span>`).join('');
       const v = o.poster != null ? `&v=${o.poster}` : '';
       return `<div class="libCard${o.hidden ? ' hiddenItem' : ''}" data-id="${esc(s.id)}">
@@ -1761,7 +1764,7 @@
         <button class="libPlay" data-id="${esc(s.id)}" title="Start the show here">
           <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 1.2v9.6L10.5 6z"/></svg>
         </button>
-        <div class="libMeta"><div class="nm">${esc(s.id.replace(/^uploads\//, ''))}</div>${effDate(s).slice(0, 10)}</div>
+        <div class="libMeta" title="${esc(o.date ? 'Date set by hand' : 'Date from ' + (s.dateSource || 'unknown'))}"><div class="nm">${esc(s.id.replace(/^uploads\//, ''))}</div>${effDate(s).slice(0, 10)}</div>
       </div>`;
     }).join('');
   }
