@@ -34,36 +34,49 @@
   /* ---------- Stage ---------- */
   #stage { position: fixed; inset: 0; background: var(--bg); }
 
+  /* Each layer holds one fully-prepared slide: a single opaque, screen-sized
+     canvas (the photo, or a video's cued first frame, composed over a blurred
+     fill of itself), plus the <video> on top once a clip rolls. Only transform
+     and opacity are ever animated, so transitions stay on the compositor. */
   .layer {
     position: absolute;
     inset: 0;
     opacity: 0;
+    overflow: hidden;
+    contain: strict;
     will-change: opacity, transform;
   }
-  .layer img, .layer video {
+  .layer canvas, .layer video, .layer img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
     display: block;
   }
-
-  @keyframes kenburns-a { from { transform: scale(1.0); } to { transform: scale(1.075) translate(0.8%, -0.5%); } }
-  @keyframes kenburns-b { from { transform: scale(1.075) translate(-0.8%, 0.5%); } to { transform: scale(1.0); } }
+  .layer canvas { object-fit: cover; will-change: transform; }
+  /* panoramas in Drift: full height, wider than the screen, panned sideways */
+  .layer canvas.pan { right: auto; width: auto; }
+  .layer video, .layer img { object-fit: contain; }
+  .layer .vslide { position: absolute; inset: 0; }
 
   /* ---------- Atmosphere: vignette + grain ---------- */
   #vignette {
     position: fixed; inset: 0; pointer-events: none; z-index: 5;
     background: radial-gradient(ellipse 130% 110% at 50% 45%, transparent 55%, rgba(0,0,0,0.42) 100%);
   }
+  /* Just larger than the screen (not 200%): fewer tiles to keep rastered. The
+     script swaps the live SVG filter for a PNG of the same noise, rendered once. */
   #grain {
-    position: fixed; inset: -50%; width: 200%; height: 200%;
+    position: fixed; inset: -48px;
     pointer-events: none; z-index: 6; opacity: 0.05;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+    will-change: transform;
     animation: grain-shift 1.6s steps(4) infinite;
+    transition: opacity 0.4s ease;
   }
   @keyframes grain-shift {
-    0% { transform: translate(0, 0); } 25% { transform: translate(-2%, 1%); }
-    50% { transform: translate(1%, -2%); } 75% { transform: translate(-1%, 2%); }
+    0% { transform: translate(0, 0); } 25% { transform: translate(-40px, 20px); }
+    50% { transform: translate(20px, -40px); } 75% { transform: translate(-20px, 40px); }
     100% { transform: translate(0, 0); }
   }
 
@@ -77,10 +90,11 @@
     color: var(--caption-color, var(--ink));
     text-shadow: 0 1px 14px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.6);
     opacity: 0;
-    transition: opacity 0.9s ease;
+    transition: opacity 0.45s ease-in;
+    will-change: opacity;
     pointer-events: none;
   }
-  #caption.show { opacity: 0.92; }
+  #caption.show { opacity: 0.92; transition: opacity 0.9s ease-out; }
   #caption::after {
     content: "";
     display: block;
@@ -1252,7 +1266,6 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
   let offline = false;          // server unreachable: hold the current slide
   let lastShownAt = Date.now(); // watchdog: when the show last moved
   let shownCount = 0;
-  let mediaFails = 0;           // consecutive unreadable files
   const cur = () => list[idx];
   const effDate = s => ov(s.id).date || s.d;
   // cache-bust poster frames so a re-extracted frame shows up immediately
@@ -1283,6 +1296,7 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
       show(Math.min(Math.max(idx, 0), list.length - 1), 1);
     } else {
       clearTimeout(timer);
+      seq++; // drop any slide still being prepared
       layers.forEach(clearLayer);
       layers.forEach(l => l.style.opacity = 0);
       $('caption').classList.remove('show');
@@ -1307,12 +1321,6 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
     if (!paused && !offline && !editing()) timer = setTimeout(() => advance(1), settings.duration * 1000);
   }
 
-  function preload(i) {
-    if (!list.length) return;
-    const s = list[((i % list.length) + list.length) % list.length];
-    new Image().src = imgSrc(s);
-  }
-
   function slideUsesVideo(slide) {
     if (!slide.vid) return false;
     const m = ov(slide.id).media;
@@ -1321,13 +1329,25 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
     return settings.media === 'video';
   }
 
-  function clearLayer(layer) {
-    for (const v of layer.querySelectorAll('video')) {
-      clearInterval(v._trimTimer);
-      v.pause();
-      v.removeAttribute('src');
-      v.load();
+  function unloadVideo(v) {
+    clearInterval(v._trimTimer);
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
+  }
+
+  // Release a slide's decoders and pixels right away (rather than at GC), so
+  // hours of playback never accumulate GPU/decoder memory.
+  function releaseEl(el) {
+    if (!el) return;
+    for (const n of [el, ...el.querySelectorAll('video, canvas')]) {
+      if (n.tagName === 'VIDEO') unloadVideo(n);
+      else if (n.tagName === 'CANVAS') { n.width = 0; n.height = 0; }
     }
+  }
+
+  function clearLayer(layer) {
+    for (const el of layer.children) releaseEl(el);
     layer.innerHTML = '';
   }
 
@@ -1347,124 +1367,570 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
     return isFinite(n) && n > 0 ? n : 1;
   }
 
-  function buildMedia(slide) {
-    if (slideUsesVideo(slide)) {
+  // Film grain: render the SVG turbulence once into a PNG tile. As a live SVG
+  // filter, any re-raster of the grain layer (it moves, and is shed during
+  // dissolves — see reveal()) re-runs feTurbulence on the raster threads; a
+  // PNG tile is a plain image copy.
+  (() => {
+    const g = $('grain');
+    const m = /^url\("?(.*?)"?\)$/.exec(getComputedStyle(g).backgroundImage);
+    if (!m) return;
+    const im = new Image();
+    im.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = im.naturalWidth || 240;
+        c.height = im.naturalHeight || 240;
+        c.getContext('2d').drawImage(im, 0, 0);
+        g.style.backgroundImage = `url(${c.toDataURL('image/png')})`;
+      } catch (e) { /* tainted or unsupported: keep the SVG */ }
+    };
+    im.src = m[1];
+  })();
+
+  /* ---------- Playout: every slide is fully ready before the cut ---------- */
+  // Broadcast rule: never cut to something that isn't on the frame buffer yet.
+  // A still is fetched, decoded and composed (photo over a blurred fill of
+  // itself) in a worker into ONE opaque, screen-sized bitmap — so a 48 MP photo
+  // costs ~4 MB of texture instead of ~190 MB, and nothing decodes on the main
+  // thread mid-transition. A video is revealed only once its first frame is
+  // decoded. Anything that errors or takes longer than PREP_TIMEOUT is skipped
+  // while the current slide simply stays up: a bad file never reaches the screen.
+  const PREP_TIMEOUT = 2800;  // per slide; with lookahead this is spent off-air
+  const VIDEO_TIMEOUT = 1800; // leaves time to fall back to the still frame
+  const FAIL_TTL = 60000;     // a file that failed is retried on a later lap
+  const FADE_MS = 1000, SLIDE_MS = 800;
+  const DRIFT_ZOOM = 1.07;    // gentle: ~1.75% top crop at most (origin sits high)
+  const PANO_AR = 2.1;        // wider than this pans in Drift instead of shrinking
+  const MAX_UPSCALE = 3;      // tiny images stay crisp-ish instead of mush
+  const MAX_PX = 2560 * 1440; // cap per-slide bitmap size (4K projectors upsample)
+  const mod = i => ((i % list.length) + list.length) % list.length;
+  const failed = new Map();   // slide id -> when it failed
+  const prepared = new Map(); // key -> { key, slide, promise, done, result }
+  let lookTimer = null, grainTimer = null;
+  let lastDir = 1;
+
+  // EXIF orientation. <img> applies it by default everywhere; createImageBitmap
+  // does in current Chrome/Firefox but not reliably in every Safari. So read
+  // the tag and the JPEG's stored size, and if a quarter-turn photo comes back
+  // un-rotated, rotate it ourselves (and assume the same decoder behaviour for
+  // flips/half-turns, which can't be told apart by size).
+  function jpegMeta(buf) {
+    try {
+      const v = new DataView(buf);
+      if (v.getUint16(0) !== 0xFFD8) return null;
+      let p = 2, o = 1, w = 0, h = 0;
+      while (p + 9 < v.byteLength && v.getUint8(p) === 0xFF) {
+        const m = v.getUint8(p + 1), len = v.getUint16(p + 2);
+        if (m === 0xE1 && v.getUint32(p + 4) === 0x45786966) { // APP1 "Exif"
+          const t = p + 10, le = v.getUint16(t) === 0x4949;
+          const ifd = t + v.getUint32(t + 4, le);
+          for (let i = 0, n = v.getUint16(ifd, le); i < n; i++) {
+            const e = ifd + 2 + i * 12;
+            if (v.getUint16(e, le) === 0x0112) { o = v.getUint16(e + 8, le); break; }
+          }
+        } else if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) { // SOFn
+          h = v.getUint16(p + 5); w = v.getUint16(p + 7);
+          break;
+        }
+        p += 2 + len;
+      }
+      return { o: o >= 1 && o <= 8 ? o : 1, w, h };
+    } catch (e) { return null; }
+  }
+  function orientationFix(meta, bmp, state) {
+    if (!meta || meta.o === 1) return 1;
+    if (meta.o >= 5 && meta.w && meta.w !== meta.h) {
+      state.raw = bmp.width === meta.w && bmp.height === meta.h; // decoder left it as stored
+    }
+    return state.raw ? meta.o : 1;
+  }
+  // drawImage into the oriented destination rect (x, y, w, h)
+  function drawOriented(ctx, bmp, o, x, y, w, h) {
+    if (!(o > 1)) { ctx.drawImage(bmp, x, y, w, h); return; }
+    const M = { 2: [-1, 0, 0, 1, w, 0], 3: [-1, 0, 0, -1, w, h], 4: [1, 0, 0, -1, 0, h], 5: [0, 1, 1, 0, 0, 0],
+      6: [0, 1, -1, 0, w, 0], 7: [0, -1, -1, 0, w, h], 8: [0, -1, 1, 0, 0, h] }[o];
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.transform(...M);
+    if (o >= 5) ctx.drawImage(bmp, 0, 0, h, w); else ctx.drawImage(bmp, 0, 0, w, h);
+    ctx.restore();
+  }
+
+  // Compose a still into one opaque canvas: blurred, darkened fill of the photo
+  // (when it doesn't cover the frame) + soft shadow + the photo, contain-fit.
+  // Runs in the worker (OffscreenCanvas) or, as a fallback, on the main thread,
+  // so it must not touch anything outside its arguments.
+  function composeSlide(bmp, o, mk) {
+    const turn = o.orient >= 5; // EXIF orientation the decoder didn't apply (see orientationFix)
+    const iw = turn ? bmp.height : bmp.width, ih = turn ? bmp.width : bmp.height;
+    const cap = Math.min(1, Math.sqrt(o.maxPx / (o.W * o.dpr * o.H * o.dpr)));
+    const sw = Math.max(16, Math.round(o.W * o.dpr * cap)), sh = Math.max(9, Math.round(o.H * o.dpr * cap));
+    const fit = Math.min(sw / iw, sh / ih);
+    const up = o.maxUp * o.dpr * cap;
+    let s = Math.min(fit, up), cw = sw, ch = sh, pan = 0;
+    if (o.pan && iw / ih > o.panoAr) {
+      // fill the height, but never pan faster than panMax over the slide
+      s = Math.max(Math.min(fit, up), Math.min(sh / ih, (sw + o.panMax * o.dpr * cap) / iw, up));
+      cw = Math.max(sw, Math.round(iw * s));
+      pan = cw - sw;
+    }
+    const k = o.zoom; // render ahead of the drift zoom: 1:1 at its peak
+    const canvas = mk(Math.round(cw * k), Math.round(ch * k));
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.scale(k, k);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    const dw = Math.round(iw * s), dh = Math.round(ih * s);
+    const dx = Math.round((cw - dw) / 2), dy = Math.round((ch - dh) / 2);
+    ctx.fillStyle = o.bg;
+    ctx.fillRect(0, 0, cw, ch);
+    if (dw < cw - 1 || dh < ch - 1) {
+      // the fill: the photo itself, cover-cropped down to a few dozen pixels,
+      // softened, stretched across the frame and pushed well back in tone
+      const tw = 40, th = Math.max(6, Math.round(40 * ch / cw));
+      const t = mk(tw, th), tc = t.getContext('2d');
+      tc.imageSmoothingEnabled = true;
+      tc.imageSmoothingQuality = 'high';
+      const c = Math.max(tw / iw, th / ih);
+      drawOriented(tc, bmp, o.orient, (tw - iw * c) / 2, (th - ih * c) / 2, iw * c, ih * c);
+      ctx.drawImage(t, 0.5, 0.5, tw - 1, th - 1, -cw * 0.04, -ch * 0.04, cw * 1.08, ch * 1.08);
+      ctx.globalCompositeOperation = 'saturation'; // half-desaturate: atmosphere, not a second picture
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = '#808080';
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(0,0,0,0.58)';
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.save(); // a soft shadow lifts the photo off its fill
+      ctx.shadowColor = 'rgba(0,0,0,0.55)';
+      ctx.shadowBlur = Math.round(sh * 0.035);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(dx, dy, dw, dh);
+      ctx.restore();
+    }
+    drawOriented(ctx, bmp, o.orient, dx, dy, dw, dh);
+    return { canvas, info: { iw, ih, pan: pan / cw, portrait: ih > iw * 1.05 } };
+  }
+
+  // One worker does fetch + decode + compose; the main thread only receives a
+  // finished ImageBitmap and hands it to a 'bitmaprenderer' canvas (zero-copy).
+  function stageWorkerMain() {
+    const orientState = { raw: false };
+    self.onmessage = async e => {
+      const m = e.data;
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), m.timeout);
+      try {
+        if (typeof OffscreenCanvas === 'undefined') { if (m.bitmap) m.bitmap.close(); throw new Error('unsupported'); }
+        let bmp = m.bitmap;
+        if (!bmp) {
+          const res = await fetch(m.url, { signal: ac.signal });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const blob = await res.blob();
+          bmp = await createImageBitmap(blob);
+          if (ac.signal.aborted) { bmp.close(); throw new Error('timeout'); }
+          m.orient = orientationFix(jpegMeta(await blob.slice(0, 262144).arrayBuffer()), bmp, orientState);
+        }
+        const out = composeSlide(bmp, m, (w, h) => new OffscreenCanvas(w, h));
+        bmp.close();
+        const bitmap = out.canvas.transferToImageBitmap();
+        self.postMessage({ id: m.id, ok: true, bitmap, info: out.info }, [bitmap]);
+      } catch (err) {
+        self.postMessage({ id: m.id, ok: false, error: String((err && err.message) || err) });
+      } finally {
+        clearTimeout(to);
+      }
+    };
+  }
+  let stageWorker = null;
+  const jobs = new Map();
+  let jobSeq = 0;
+  try {
+    const code = [jpegMeta, orientationFix, drawOriented, composeSlide].join('\n') +
+      '\n(' + stageWorkerMain.toString() + ')();';
+    stageWorker = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+    stageWorker.onmessage = e => {
+      const j = jobs.get(e.data.id);
+      if (!j) { if (e.data.bitmap) e.data.bitmap.close(); return; }
+      jobs.delete(e.data.id);
+      if (e.data.ok) j.resolve(e.data); else j.reject(new Error(e.data.error));
+    };
+    stageWorker.onerror = () => {
+      stageWorker = null;
+      for (const j of jobs.values()) j.reject(new Error('unsupported'));
+      jobs.clear();
+    };
+  } catch (e) { stageWorker = null; }
+
+  const mainOrientState = { raw: false };
+  async function renderStillMain(source, o) {
+    const ac = new AbortController();
+    const to = setTimeout(() => ac.abort(), o.timeout);
+    try {
+      let bmp = source;
+      if (typeof source === 'string') {
+        const res = await fetch(source, { signal: ac.signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        bmp = await createImageBitmap(blob);
+        o = { ...o, orient: orientationFix(jpegMeta(await blob.slice(0, 262144).arrayBuffer()), bmp, mainOrientState) };
+      }
+      const out = composeSlide(bmp, o, (w, h) => {
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        return c;
+      });
+      bmp.close();
+      return out;
+    } finally {
+      clearTimeout(to);
+    }
+  }
+
+  // source: an image URL, or an ImageBitmap (consumed)
+  function renderStill(source, o) {
+    o = { ...o, timeout: PREP_TIMEOUT - 200 };
+    if (!stageWorker) return renderStillMain(source, o);
+    const isUrl = typeof source === 'string';
+    return new Promise((resolve, reject) => {
+      const id = ++jobSeq;
+      jobs.set(id, { resolve, reject });
+      if (isUrl) stageWorker.postMessage({ ...o, id, url: new URL(source, location.href).href });
+      else stageWorker.postMessage({ ...o, id, bitmap: source }, [source]);
+    }).then(({ bitmap, info }) => {
+      const c = document.createElement('canvas');
+      c.width = bitmap.width; c.height = bitmap.height;
+      const r = c.getContext('bitmaprenderer');
+      if (r) r.transferFromImageBitmap(bitmap);
+      else { c.getContext('2d').drawImage(bitmap, 0, 0); bitmap.close(); }
+      return { canvas: c, info };
+    }, err => {
+      if (err.message === 'unsupported') { stageWorker = null; if (isUrl) return renderStillMain(source, o); }
+      throw err;
+    });
+  }
+
+  const drifting = () => settings.transition === 'kenburns';
+  const stillOpts = drift => ({
+    W: innerWidth, H: innerHeight, dpr: Math.min(devicePixelRatio || 1, 3), maxPx: MAX_PX,
+    maxUp: MAX_UPSCALE, panoAr: PANO_AR, bg: settings.bg || '#000',
+    zoom: drift ? DRIFT_ZOOM : 1, pan: drift,
+    // panorama pan speed: at most ~7% of the screen width per second
+    panMax: innerWidth * 0.07 * (settings.duration + FADE_MS / 1000),
+  });
+
+  const once = (target, ev, ms) => new Promise(res => {
+    const t = setTimeout(res, ms);
+    target.addEventListener(ev, () => { clearTimeout(t); res(); }, { once: true });
+  });
+  const sleep = ms => new Promise(res => setTimeout(res, ms));
+
+  // Load a clip to its first decoded frame, parked on the trim start.
+  function cueVideo(slide) {
+    return new Promise((resolve, reject) => {
       const v = document.createElement('video');
       v.muted = true;
       v.loop = true;
-      v.autoplay = true;
       v.playsInline = true;
+      v.preload = 'auto';
+      let settled = false;
+      const fail = msg => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(to);
+        unloadVideo(v);
+        reject(new Error(msg));
+      };
+      const to = setTimeout(() => fail('video timeout'), VIDEO_TIMEOUT);
+      v.addEventListener('error', () => fail('video error'), { once: true });
+      v.addEventListener('loadeddata', async () => {
+        const t = ov(slide.id).trim;
+        if (t && t[0] > 0) { v.currentTime = t[0]; await once(v, 'seeked', 600); }
+        if (settled) return;
+        settled = true;
+        clearTimeout(to);
+        try { v.playbackRate = videoRate(slide, v.duration); } catch (e) {}
+        resolve(v);
+      }, { once: true });
       v.src = src(slide.vid);
-      const applyRate = () => { try { v.playbackRate = videoRate(slide, v.duration); } catch (e) {} };
-      v.addEventListener('loadedmetadata', () => {
-        const t = ov(slide.id).trim;
-        if (t) v.currentTime = t[0];
-        applyRate();
-      });
-      // keep playback inside the trim window and keep the rate current (both read
-      // overrides live so editor changes take effect immediately)
-      v._trimTimer = setInterval(() => {
-        applyRate();
-        const t = ov(slide.id).trim;
-        if (!t) return;
-        if (v.currentTime > t[1] || v.currentTime < t[0] - 0.35) v.currentTime = t[0];
-      }, 90);
-      return v;
-    }
-    const img = document.createElement('img');
-    img.src = imgSrc(slide);
-    return img;
+    });
   }
 
-  function show(i, dir) {
+  // A video slide = a still of its cued first frame (composed over a blurred
+  // fill of that same frame, exactly where the clip will sit) + the clip on
+  // top, hidden until it rolls. The dissolve then moves a single opaque
+  // picture, like a photo; when the clip appears it is pixel-for-pixel the
+  // frame already on screen.
+  async function buildVideo(slide) {
+    const v = await cueVideo(slide);
+    let still = null;
+    try {
+      still = await renderStill(await createImageBitmap(v), { ...stillOpts(false), maxUp: 1e4 });
+    } catch (e) { /* no frame grab: plain backdrop below */ }
+    const wrap = document.createElement('div');
+    wrap.className = 'vslide';
+    if (still) wrap.appendChild(still.canvas);
+    else {
+      const c = document.createElement('canvas');
+      c.width = c.height = 1;
+      const cx = c.getContext('2d');
+      cx.fillStyle = settings.bg || '#000';
+      cx.fillRect(0, 0, 1, 1);
+      wrap.appendChild(c);
+    }
+    v.style.visibility = 'hidden';
+    wrap.appendChild(v);
+    return { el: wrap, kind: 'video', video: v, slide, cued: !!still };
+  }
+
+  async function buildSlide(slide) {
+    if (slideUsesVideo(slide)) {
+      try { return await buildVideo(slide); }
+      catch (e) { /* unplayable clip: fall back to its still (Live Photo frame / poster) */ }
+    }
+    if (/\.gif$/i.test(slide.img)) {
+      // keep GIFs animating: a live <img> (decoded before the cut) over a
+      // still of its first frame, composed exactly where the <img> lands
+      const img = new Image();
+      img.src = imgSrc(slide);
+      const [still] = await Promise.all([
+        renderStill(imgSrc(slide), { ...stillOpts(false), maxUp: 1e4 }),
+        img.decode(),
+      ]);
+      const wrap = document.createElement('div');
+      wrap.className = 'vslide';
+      wrap.append(still.canvas, img);
+      return { el: wrap, kind: 'gif', slide };
+    }
+    const { canvas, info } = await renderStill(imgSrc(slide), stillOpts(drifting()));
+    if (info.pan) canvas.classList.add('pan');
+    return { el: canvas, kind: 'still', info, slide };
+  }
+
+  const prepKey = slide => [slide.id, slideUsesVideo(slide) ? 'v' : 'p', imgSrc(slide),
+    innerWidth, innerHeight, drifting() ? 'k' : '', settings.bg].join('|');
+  const isFailed = slide => {
+    const t = failed.get(slide.id);
+    return t != null && Date.now() - t < FAIL_TTL;
+  };
+
+  function prepare(slide) {
+    const key = prepKey(slide);
+    let e = prepared.get(key);
+    if (e) return e;
+    e = { key, slide, done: false, result: null };
+    let timedOut = false;
+    const work = buildSlide(slide);
+    e.promise = Promise.race([
+      work,
+      sleep(PREP_TIMEOUT).then(() => { timedOut = true; throw new Error('timeout'); }),
+    ]).then(r => {
+      e.done = true;
+      e.result = r;
+      return r;
+    }, err => {
+      e.done = true;
+      if (prepared.get(key) === e) prepared.delete(key);
+      failed.set(slide.id, Date.now());
+      if (timedOut) work.then(r => releaseEl(r.el), () => {});
+      console.warn('slideshow: skipping', slide.id, '-', err.message);
+      throw err;
+    });
+    e.promise.catch(() => {});
+    prepared.set(key, e);
+    return e;
+  }
+
+  // Keep the next two playable slides in the pipeline; drop everything else.
+  function lookahead(dir) {
+    if (!list.length) return;
+    const want = new Set();
+    for (let k = 1; k <= 6 && want.size < 2 && k < list.length; k++) {
+      const s = list[mod(idx + dir * k)];
+      if (!isFailed(s)) want.add(prepare(s).key);
+    }
+    for (const [key, e] of prepared) {
+      if (!want.has(key) && e.done) { prepared.delete(key); releaseEl(e.result && e.result.el); }
+    }
+  }
+
+  function flushPrepared() {
+    for (const e of prepared.values()) if (e.done && e.result) releaseEl(e.result.el);
+    prepared.clear();
+  }
+  let resizeTimer = null;
+  addEventListener('resize', () => {
+    flushPrepared(); // sized for the old viewport (e.g. before fullscreen)
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => lookahead(lastDir), 300);
+  });
+
+  const frames = n => new Promise(res => {
+    const step = () => (n-- <= 0 ? res() : requestAnimationFrame(step));
+    requestAnimationFrame(step);
+  });
+
+  async function show(i, dir) {
     if (!list.length) return;
     hideEmpty();
-    i = ((i % list.length) + list.length) % list.length;
     const mySeq = ++seq;
-    idx = i; // update immediately so rapid skips compound correctly
-    const slide = list[i];
-    const back = layers[1 - active];
-    clearLayer(back);
-    const el = buildMedia(slide);
-    back.appendChild(el);
-    back._seq = mySeq;
-
-    const go = () => {
-      if (mySeq !== seq) return;
-      lastShownAt = Date.now();
-      shownCount++;
-      mediaFails = 0;
-      reveal(back, el, dir);
-      updateCaption(slide);
-      updateCounter();
-      maybeRenderSlideTab();
-      preload(i + dir);
-      schedule();
-    };
-
-    // never put a broken file on screen: skip past it, or hold if the server is gone
-    const fail = () => mediaFailed(mySeq, slide, i, dir);
-    if (el.tagName === 'VIDEO') {
-      let started = false;
-      const once = () => { if (!started) { started = true; go(); } };
-      el.addEventListener('loadeddata', once);
-      el.addEventListener('error', () => { if (!started) started = true; fail(); });
-      setTimeout(once, 900); // don't stall the show on a slow video
-    } else if (el.complete) {
-      if (el.naturalWidth) go(); else fail();
-    } else {
-      el.onload = go;
-      el.onerror = fail;
+    lastDir = dir;
+    clearTimeout(timer);
+    for (let tries = 0; tries < list.length; tries++) {
+      i = mod(i);
+      idx = i; // update immediately so rapid skips compound correctly
+      const slide = list[i];
+      if (isFailed(slide)) { i += dir; continue; }
+      const e = prepare(slide);
+      // while we wait, warm the one after: a bad file then costs one wait, not two
+      if (!e.done && list.length > 1) {
+        const n = list[mod(i + dir)];
+        if (!isFailed(n)) prepare(n);
+      }
+      try { await e.promise; } catch (err) {
+        if (mySeq !== seq) return;
+        // a file that won't load is skipped, unless the server itself is gone:
+        // then hold the current slide and retry this one when it's back
+        const up = await serverUp();
+        if (mySeq !== seq) return;
+        if (!up) { failed.delete(slide.id); prepared.delete(e.key); goOffline(dir); return; }
+        window.__slideshow.skipped++;
+        logFault('skipped unreadable file', slide.id);
+        i += dir;
+        continue;
+      }
+      if (mySeq !== seq) return; // superseded; the prepared slide stays cached
+      if (prepared.get(e.key) === e) prepared.delete(e.key); // each prepared slide is used once
+      await cut(e.result, dir, mySeq);
+      return;
     }
+    schedule(); // nothing playable right now: keep what's up and try again later
   }
 
-  function reveal(back, el, dir) {
+  async function cut(r, dir, mySeq) {
+    const back = layers[1 - active];
+    clearLayer(back);
+    for (const a of back.getAnimations()) a.cancel();
+    back.style.opacity = 0;
+    back.appendChild(r.el);
+    back._seq = mySeq;
+    // Let the compositor take the new layer while it's still invisible, so
+    // the first frame of the cut already has pixels.
+    await frames(2);
+    if (r.video && !r.cued && r.video.requestVideoFrameCallback) {
+      // no stand-in still: show the clip itself, once a frame is presented
+      r.video.style.visibility = '';
+      await new Promise(res => {
+        const t = setTimeout(res, 150);
+        r.video.requestVideoFrameCallback(() => { clearTimeout(t); res(); });
+      });
+    }
+    if (mySeq !== seq) { r.el.remove(); releaseEl(r.el); return; }
+    lastShownAt = Date.now();
+    shownCount++;
+    reveal(back, r, dir);
+    updateCaption(r.slide);
+    updateCounter();
+    maybeRenderSlideTab();
+    schedule();
+    clearTimeout(lookTimer);
+    // refill the pipeline once the transition has finished, off the critical path
+    lookTimer = setTimeout(() => lookahead(dir), FADE_MS + 300);
+  }
+
+  function startVideo(v, slide) {
+    const applyRate = () => { try { v.playbackRate = videoRate(slide, v.duration); } catch (e) {} };
+    // keep playback inside the trim window and keep the rate current (both read
+    // overrides live so editor changes take effect immediately)
+    v._trimTimer = setInterval(() => {
+      applyRate();
+      const t = ov(slide.id).trim;
+      if (!t) return;
+      if (v.currentTime > t[1] || v.currentTime < t[0] - 0.35) v.currentTime = t[0];
+    }, 90);
+    v.style.visibility = '';
+    const p = v.play();
+    if (p && p.catch) p.catch(() => {});
+  }
+
+  // Ken Burns with intent: the zoom origin sits high (where faces are) so the
+  // push-in crops feet before foreheads; portraits anchor near the top edge;
+  // panoramas pan end to end instead of shrinking to a sliver.
+  function drift(r, n) {
+    const el = r.el, info = r.info;
+    const opts = { duration: (settings.duration * 1000 + FADE_MS) * 1.15, easing: 'cubic-bezier(0.37, 0, 0.63, 1)', fill: 'both' };
+    if (info.pan) {
+      const x = `translate3d(${(-info.pan * 100).toFixed(3)}%,0,0)`, z = 'translate3d(0,0,0)';
+      el.animate(n % 2 ? [{ transform: x }, { transform: z }] : [{ transform: z }, { transform: x }], opts);
+      return;
+    }
+    el.style.transformOrigin = info.portrait ? '50% 10%' : ['30% 28%', '70% 28%', '50% 36%'][n % 3];
+    const a = 'scale(1)', b = `scale(${DRIFT_ZOOM})`;
+    el.animate(n % 4 === 3 ? [{ transform: b }, { transform: a }] : [{ transform: a }, { transform: b }], opts);
+  }
+
+  function reveal(back, r, dir) {
     const front = layers[active];
     const tr = settings.transition;
+    // a skip mid-transition: settle whatever was running before starting anew
+    for (const a of front.getAnimations()) a.cancel();
     back.style.zIndex = 2;
     front.style.zIndex = 1;
-
-    back.style.transition = 'none';
-    front.style.transition = 'none';
     back.style.transform = '';
-
-    if (tr === 'none') {
-      back.style.opacity = 1;
-      front.style.opacity = 0;
-    } else if (tr === 'slide') {
-      back.style.transform = `translateX(${dir * 100}%)`;
-      back.style.opacity = 1;
-      void back.offsetWidth;
-      back.style.transition = 'transform 0.7s cubic-bezier(0.22, 1, 0.3, 1)';
-      front.style.transition = 'transform 0.7s cubic-bezier(0.22, 1, 0.3, 1), opacity 0s linear 0.7s';
-      back.style.transform = 'translateX(0)';
-      front.style.transform = `translateX(${dir * -100}%)`;
-      front.style.opacity = 0;
-    } else { // fade & kenburns crossfade
-      back.style.opacity = 0;
-      void back.offsetWidth;
-      back.style.transition = 'opacity 1s ease';
-      front.style.transition = 'opacity 1s ease';
-      back.style.opacity = 1;
-      front.style.opacity = 0;
+    front.style.transform = '';
+    back.style.opacity = 1;
+    const ease = 'cubic-bezier(0.22, 1, 0.3, 1)';
+    let ms = 0;
+    if (tr === 'slide') {
+      ms = SLIDE_MS;
+      back.animate([{ transform: `translate3d(${dir * 100}%,0,0)` }, { transform: 'translate3d(0,0,0)' }], { duration: ms, easing: ease });
+      front.animate([{ transform: 'translate3d(0,0,0)' }, { transform: `translate3d(${dir * -100}%,0,0)` }], { duration: ms, easing: ease, fill: 'forwards' });
+    } else if (tr !== 'none') {
+      // fade & drift: a true mix — the outgoing slide stays fully opaque
+      // underneath while the incoming one fades in over it, so the picture
+      // never dips toward black mid-dissolve
+      ms = FADE_MS;
+      const fade = [{ opacity: 0 }, { opacity: 1 }], o = { duration: ms, easing: 'ease-in-out' };
+      // An uncued clip makes the slide two visible quads; fading the group
+      // would force an offscreen pass per frame, so fade the leaves in step.
+      if (r.kind === 'video' && !r.cued) for (const c of r.el.children) c.animate(fade, o);
+      else back.animate(fade, o);
     }
+    // A clip is cued on its first frame and rolls once it's fully on screen
+    // (broadcast "take, then roll"): the audience sees it from frame one, and
+    // only one clip is ever decoding during a dissolve. An outgoing clip keeps
+    // playing as it fades under a photo, so "Fit to slide" spans its slot.
+    if (r.kind === 'video') {
+      // clip to clip: hold the outgoing clip's frame through the dissolve
+      // rather than decode two streams at once (that drops frames)
+      if (ms) for (const v of front.querySelectorAll('video')) { clearInterval(v._trimTimer); v.pause(); }
+      setTimeout(() => { if (r.el.isConnected) startVideo(r.video, r.slide); }, ms);
+    } else if (tr === 'kenburns') drift(r, idx);
 
-    if (tr === 'kenburns' && el.tagName === 'IMG') {
-      const anim = idx % 2 ? 'kenburns-b' : 'kenburns-a';
-      el.style.animation = `${anim} ${settings.duration + 2}s ease-in-out forwards`;
+    // Shed the film grain for the length of the mix. At 5% it can't be seen
+    // going while two full slides blend, but it is one more full-screen layer
+    // to composite exactly when the compositor is busiest (measured: ~4x the
+    // dropped frames with it, in the software-composited profile).
+    if (ms) {
+      const g = $('grain');
+      g.style.transitionDuration = '0.15s';
+      g.style.opacity = 0;
+      clearTimeout(grainTimer);
+      grainTimer = setTimeout(() => { g.style.transitionDuration = '0.6s'; g.style.opacity = ''; }, ms + 100);
     }
 
     active = 1 - active;
-
     const retired = front;
     const retiredSeq = retired._seq;
     setTimeout(() => {
       // skip if a newer slide has been built into this layer since (rapid skips)
-      if (retired !== layers[active] && retired._seq === retiredSeq) {
-        clearLayer(retired);
-        retired.style.transform = '';
-      }
-    }, 1100);
+      if (retired === layers[active] || retired._seq !== retiredSeq) return;
+      for (const a of retired.getAnimations()) a.cancel();
+      retired.style.opacity = 0;
+      clearLayer(retired);
+    }, ms + 100);
   }
 
   function advance(dir) { show(idx + dir, dir); }
@@ -1506,9 +1972,22 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
         text = ageText(d);
       }
     }
-    cap.textContent = text || '';
-    cap.classList.toggle('show', !!text);
+    text = text || '';
+    // Same caption as the slide before (same month / same age): leave it alone,
+    // so it reads as a steady title instead of blinking on every photo.
+    if (text === capText) { cap.classList.toggle('show', !!text); return; }
+    capText = text;
+    const tok = ++capToken;
+    const swap = () => {
+      if (tok !== capToken) return;
+      cap.textContent = text;
+      cap.classList.toggle('show', !!text);
+    };
+    // otherwise dip the old one out, then bring the new one up mid-dissolve
+    if (cap.classList.contains('show')) { cap.classList.remove('show'); setTimeout(swap, 450); }
+    else swap();
   }
+  let capText = null, capToken = 0;
 
   function updateCounter() {
     $('counter').textContent = list.length ? `${idx + 1} of ${list.length}` : 'no photos';
@@ -3218,26 +3697,6 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
     } catch (e) { return false; }
   }
 
-  // A photo/video failed to load. If the server is still there the file itself
-  // is bad: skip it without ever revealing it. If the server is gone, hold the
-  // current slide and retry this one when it comes back.
-  async function mediaFailed(mySeq, slide, i, dir) {
-    if (mySeq !== seq) return;
-    const up = await serverUp();
-    if (mySeq !== seq) return;
-    if (!up) { goOffline(dir); return; }
-    window.__slideshow.skipped++;
-    logFault('skipped unreadable file', slide.id);
-    if (++mediaFails >= list.length) {
-      // everything is failing: wait a slide's length before trying again
-      mediaFails = 0;
-      clearTimeout(timer);
-      timer = setTimeout(() => show(i + dir, dir), settings.duration * 1000);
-      return;
-    }
-    show(i + dir, dir);
-  }
-
   let retryDir = 1, shownWhenLost = 0;
   function goOffline(dir) {
     retryDir = dir || 1;
@@ -3251,6 +3710,8 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
       offline = window.__slideshow.offline = false;
       window.__slideshow.reconnects++;
       logFault('server back', 'resuming');
+      failed.clear();
+      flushPrepared();
       await refreshFromServer(); // pick up anything that changed; keeps the current slide
       if (!list.length) return;
       // a slide that was still loading when we lost the server gets retried
