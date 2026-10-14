@@ -31,7 +31,7 @@
 //     (counter change -50 ms .. +1250 ms) and steady state
 //   * CDP screencast of every composited frame (320x180 PNG) -> per-frame mean
 //     luminance and fraction of non-dark pixels. A frame with <2 % non-dark
-//     pixels is BLANK. A transition whose darkest frame is <70 % of the dimmer
+//     pixels is BLANK. A transition whose darkest frame is <85 % of the dimmer
 //     of its two endpoints is a DIP (a visible dark flash).
 //   * per-frame "ready coverage": opacity-weighted, on-screen area of <img>/<video>
 //     in #stage that actually have pixels (img complete, video readyState >= 2)
@@ -217,10 +217,18 @@ async function pass(screencast) {
   const browser = await chromium.launch({
     headless: !HEADED,
     executablePath: process.env.CHROMIUM_PATH || undefined,
-    args: ['--autoplay-policy=no-user-gesture-required'],
+    args: ['--autoplay-policy=no-user-gesture-required', `--slideshow-harness=${port}`], // marker to find our browser pid
   });
   const rss = [];
-  const bpid = browser.process && browser.process() ? browser.process().pid : null;
+  const bpid = (() => {
+    try {
+      for (const d of readdirSync('/proc')) {
+        if (/^\d+$/.test(d) && readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(`--slideshow-harness=${port}`) &&
+            !readFileSync(`/proc/${d}/cmdline`, 'utf8').includes('--type=')) return +d;
+      }
+    } catch {}
+    return null;
+  })();
   const rssTimer = bpid ? setInterval(() => { const v = browserRssMB(bpid); if (v) rss.push(v); }, 1000) : null;
   const ctx = await browser.newContext({ viewport: { width: VW, height: VH }, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
@@ -358,6 +366,9 @@ for (let k = 1; k < A.raf.length; k++) if (!inWin[k] && A.raf[k] > A.startT) ste
 
 // --- what the screen showed (screen pass) ---
 const isBlank = s => s.nd < 0.02;
+// a dissolve whose darkest frame is under 85% of its dimmer endpoint reads as
+// a dip toward black (a plain A/B mix of two equally bright slides stays ~100%)
+const DIP = 0.85;
 const transShotGaps = [];
 for (const rv of B.reveals) {
   const win = B.shotT.filter(s => s.t >= rv.t - 200 && s.t <= rv.t + 1400);
@@ -410,7 +421,7 @@ const byCat = {};
 for (const p of perTrans) {
   const c = (byCat[p.cat] ??= { n: 0, maxDelta: 0, over20: 0, blank: 0, dips: 0 });
   c.n++; c.maxDelta = Math.max(c.maxDelta, p.maxDelta ?? 0); c.over20 += p.over20; c.blank += p.blankFrames;
-  if (p.dip != null && p.dip < 0.7) c.dips++;
+  if (p.dip != null && p.dip < DIP) c.dips++;
 }
 const dips = perTrans.filter(p => p.dip != null);
 const report = {
@@ -430,7 +441,7 @@ const report = {
     blankMs: Math.round(blankMs),
     blankFramesInTransitions: perTrans.reduce((s, p) => s + p.blankFrames, 0),
     transitionsWithBlank: perTrans.filter(p => p.blankFrames > 0).length,
-    dipTransitions: dips.filter(p => p.dip < 0.7).length,
+    dipTransitions: dips.filter(p => p.dip < DIP).length,
     dipMeasured: dips.length,
     dipMedian: median(dips.map(p => p.dip)),
     dipWorst: dips.length ? Math.min(...dips.map(p => p.dip)) : null,
@@ -453,7 +464,7 @@ console.log(`\n== ${report.transitions} transitions (${TRANSITION}, ${DURATION}s
 if (f) console.log(`transition frames  n=${f.transition.n}  p50=${f.transition.p50}  p95=${f.transition.p95}  p99=${f.transition.p99}  max=${f.transition.max} ms  >20ms=${f.transition.over20}  >33ms=${f.transition.over33}
 steady frames      p50=${f.steady.p50}  p99=${f.steady.p99}  max=${f.steady.max} ms  >33ms=${f.steady.over33}   long-animation-frames=${f.longAnimationFrames}`);
 if (s) console.log(`screen             ${s.screencastFrames} frames  BLANK=${s.blankFrames} (${s.blankMs} ms; ${s.blankFramesInTransitions} in ${s.transitionsWithBlank} transitions)
-dips               ${s.dipTransitions}/${s.dipMeasured} transitions dip <70%  median=${s.dipMedian}  worst=${s.dipWorst}`);
+dips               ${s.dipTransitions}/${s.dipMeasured} transitions dip <${DIP * 100}%  median=${s.dipMedian}  worst=${s.dipWorst}`);
 if (report.memoryMB) console.log(`browser memory     peak ${report.memoryMB.peak} MB, median ${report.memoryMB.median} MB (RSS, all processes)`);
 console.log(`coverage           frames <50% ready=${report.coverage.framesBelowHalf}  empty=${report.coverage.framesEmpty}
 interventions      ${report.interventions}   page errors=${errors.length}${errors.length ? '\n  ' + errors.slice(0, 3).join('\n  ') : ''}
