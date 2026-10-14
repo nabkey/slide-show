@@ -45,8 +45,8 @@ import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, u
 import os, { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { inflateSync } from 'node:zlib';
 import { ensureFixtures } from './fixtures.mjs';
+import { pngStats } from './png.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -83,49 +83,6 @@ async function loadPlaywright() {
     try { return await import(t); } catch {}
   }
   throw new Error('playwright not found; set PLAYWRIGHT_MODULE');
-}
-
-// ---------- tiny PNG decoder -> luminance stats (no deps) ----------
-function pngStats(buf) {
-  let off = 8, w = 0, h = 0, ct = 6;
-  const idat = [];
-  while (off < buf.length) {
-    const len = buf.readUInt32BE(off);
-    const type = buf.toString('ascii', off + 4, off + 8);
-    const data = buf.subarray(off + 8, off + 8 + len);
-    if (type === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); ct = data[9]; }
-    else if (type === 'IDAT') idat.push(data);
-    else if (type === 'IEND') break;
-    off += 12 + len;
-  }
-  const raw = inflateSync(Buffer.concat(idat));
-  const bpp = { 0: 1, 2: 3, 4: 2, 6: 4 }[ct] ?? 4;
-  const stride = w * bpp;
-  let prev = new Uint8Array(stride), cur = new Uint8Array(stride);
-  let p = 0, sum = 0, nd = 0;
-  for (let y = 0; y < h; y++) {
-    const f = raw[p++];
-    for (let x = 0; x < stride; x++) {
-      const a = x >= bpp ? cur[x - bpp] : 0, b = prev[x], c = x >= bpp ? prev[x - bpp] : 0;
-      let v = raw[p++];
-      if (f === 1) v += a;
-      else if (f === 2) v += b;
-      else if (f === 3) v += (a + b) >> 1;
-      else if (f === 4) {
-        const pp = a + b - c, pa = Math.abs(pp - a), pb = Math.abs(pp - b), pc = Math.abs(pp - c);
-        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-      }
-      cur[x] = v & 255;
-    }
-    for (let x = 0; x < w; x++) {
-      const i = x * bpp;
-      const l = bpp >= 3 ? 0.2126 * cur[i] + 0.7152 * cur[i + 1] + 0.0722 * cur[i + 2] : cur[i];
-      sum += l;
-      if (l > 40) nd++;
-    }
-    [prev, cur] = [cur, prev];
-  }
-  return { lum: sum / (w * h), nd: nd / (w * h) };
 }
 
 // ---------- stats helpers ----------

@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureFixtures } from './fixtures.mjs';
+import { decodePng } from './png.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -32,6 +33,16 @@ writeFileSync(path.join(dir, 'server.ts'),
 copyFileSync(HTML, path.join(dir, 'index.html'));
 for (const it of items) for (const f of [it.id, it.live].filter(Boolean)) {
   try { linkSync(path.join(FIXTURES, f), path.join(dir, f)); } catch { copyFileSync(path.join(FIXTURES, f), path.join(dir, f)); }
+}
+// a quarter-turn phone photo: landscape pixels + EXIF Orientation 6, so it
+// must show as a portrait (sorted first by its date)
+const ROTATED = 'IMG_20040101_120000.jpg';
+{
+  const jpg = readFileSync(path.join(FIXTURES, items.find(it => it.cat === 'landscape').id));
+  const tiff = Buffer.from([0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+  const body = Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiff]);
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, (body.length + 2) >> 8, (body.length + 2) & 255]), body]);
+  writeFileSync(path.join(dir, ROTATED), Buffer.concat([jpg.subarray(0, 2), app1, jpg.subarray(2)]));
 }
 const server = spawn('bun', ['server.ts'], { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] });
 await new Promise(res => server.stdout.on('data', d => /Slideshow ready/.test(d) && res()));
@@ -87,6 +98,17 @@ check('first slide appears', await waitIdx(0));
 await page.waitForTimeout(1200);
 let st = await stage();
 check('first slide is a painted canvas', st.opacity === 1 && st.canvas && st.canvas.w > 0, JSON.stringify(st.canvas));
+{
+  // the photo is the bright band over its darkened fill: measure its width
+  const { w, h, lum } = decodePng(await page.screenshot());
+  let bright = 0;
+  for (let x = 0; x < w; x++) {
+    let m = 0;
+    for (let y = h * 0.3 | 0; y < h * 0.7; y++) m += lum[y * w + x];
+    if (m / (h * 0.4) > 75) bright++;
+  }
+  check('EXIF-rotated photo shows upright (portrait)', order[0] === ROTATED && bright > 450 && bright < 650, `photo ${bright}px wide`);
+}
 check('date caption', /^[A-Z][a-z]+ \d{4}$/.test(st.caption) && st.captionShown, st.caption);
 
 check('auto-advances', await waitIdx(1, 5000));

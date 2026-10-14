@@ -1201,12 +1201,60 @@
   let lookTimer = null, grainTimer = null;
   let lastDir = 1;
 
+  // EXIF orientation. <img> applies it by default everywhere; createImageBitmap
+  // does in current Chrome/Firefox but not reliably in every Safari. So read
+  // the tag and the JPEG's stored size, and if a quarter-turn photo comes back
+  // un-rotated, rotate it ourselves (and assume the same decoder behaviour for
+  // flips/half-turns, which can't be told apart by size).
+  function jpegMeta(buf) {
+    try {
+      const v = new DataView(buf);
+      if (v.getUint16(0) !== 0xFFD8) return null;
+      let p = 2, o = 1, w = 0, h = 0;
+      while (p + 9 < v.byteLength && v.getUint8(p) === 0xFF) {
+        const m = v.getUint8(p + 1), len = v.getUint16(p + 2);
+        if (m === 0xE1 && v.getUint32(p + 4) === 0x45786966) { // APP1 "Exif"
+          const t = p + 10, le = v.getUint16(t) === 0x4949;
+          const ifd = t + v.getUint32(t + 4, le);
+          for (let i = 0, n = v.getUint16(ifd, le); i < n; i++) {
+            const e = ifd + 2 + i * 12;
+            if (v.getUint16(e, le) === 0x0112) { o = v.getUint16(e + 8, le); break; }
+          }
+        } else if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) { // SOFn
+          h = v.getUint16(p + 5); w = v.getUint16(p + 7);
+          break;
+        }
+        p += 2 + len;
+      }
+      return { o: o >= 1 && o <= 8 ? o : 1, w, h };
+    } catch (e) { return null; }
+  }
+  function orientationFix(meta, bmp, state) {
+    if (!meta || meta.o === 1) return 1;
+    if (meta.o >= 5 && meta.w && meta.w !== meta.h) {
+      state.raw = bmp.width === meta.w && bmp.height === meta.h; // decoder left it as stored
+    }
+    return state.raw ? meta.o : 1;
+  }
+  // drawImage into the oriented destination rect (x, y, w, h)
+  function drawOriented(ctx, bmp, o, x, y, w, h) {
+    if (!(o > 1)) { ctx.drawImage(bmp, x, y, w, h); return; }
+    const M = { 2: [-1, 0, 0, 1, w, 0], 3: [-1, 0, 0, -1, w, h], 4: [1, 0, 0, -1, 0, h], 5: [0, 1, 1, 0, 0, 0],
+      6: [0, 1, -1, 0, w, 0], 7: [0, -1, -1, 0, w, h], 8: [0, -1, 1, 0, 0, h] }[o];
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.transform(...M);
+    if (o >= 5) ctx.drawImage(bmp, 0, 0, h, w); else ctx.drawImage(bmp, 0, 0, w, h);
+    ctx.restore();
+  }
+
   // Compose a still into one opaque canvas: blurred, darkened fill of the photo
   // (when it doesn't cover the frame) + soft shadow + the photo, contain-fit.
   // Runs in the worker (OffscreenCanvas) or, as a fallback, on the main thread,
   // so it must not touch anything outside its arguments.
   function composeSlide(bmp, o, mk) {
-    const iw = bmp.width, ih = bmp.height;
+    const turn = o.orient >= 5; // EXIF orientation the decoder didn't apply (see orientationFix)
+    const iw = turn ? bmp.height : bmp.width, ih = turn ? bmp.width : bmp.height;
     const cap = Math.min(1, Math.sqrt(o.maxPx / (o.W * o.dpr * o.H * o.dpr)));
     const sw = Math.max(16, Math.round(o.W * o.dpr * cap)), sh = Math.max(9, Math.round(o.H * o.dpr * cap));
     const fit = Math.min(sw / iw, sh / ih);
@@ -1236,7 +1284,7 @@
       tc.imageSmoothingEnabled = true;
       tc.imageSmoothingQuality = 'high';
       const c = Math.max(tw / iw, th / ih);
-      tc.drawImage(bmp, (tw - iw * c) / 2, (th - ih * c) / 2, iw * c, ih * c);
+      drawOriented(tc, bmp, o.orient, (tw - iw * c) / 2, (th - ih * c) / 2, iw * c, ih * c);
       ctx.drawImage(t, 0.5, 0.5, tw - 1, th - 1, -cw * 0.04, -ch * 0.04, cw * 1.08, ch * 1.08);
       ctx.globalCompositeOperation = 'saturation'; // half-desaturate: atmosphere, not a second picture
       ctx.globalAlpha = 0.5;
@@ -1253,13 +1301,14 @@
       ctx.fillRect(dx, dy, dw, dh);
       ctx.restore();
     }
-    ctx.drawImage(bmp, dx, dy, dw, dh);
+    drawOriented(ctx, bmp, o.orient, dx, dy, dw, dh);
     return { canvas, info: { iw, ih, pan: pan / cw, portrait: ih > iw * 1.05 } };
   }
 
   // One worker does fetch + decode + compose; the main thread only receives a
   // finished ImageBitmap and hands it to a 'bitmaprenderer' canvas (zero-copy).
   function stageWorkerMain() {
+    const orientState = { raw: false };
     self.onmessage = async e => {
       const m = e.data;
       const ac = new AbortController();
@@ -1270,8 +1319,10 @@
         if (!bmp) {
           const res = await fetch(m.url, { signal: ac.signal });
           if (!res.ok) throw new Error('HTTP ' + res.status);
-          bmp = await createImageBitmap(await res.blob());
+          const blob = await res.blob();
+          bmp = await createImageBitmap(blob);
           if (ac.signal.aborted) { bmp.close(); throw new Error('timeout'); }
+          m.orient = orientationFix(jpegMeta(await blob.slice(0, 262144).arrayBuffer()), bmp, orientState);
         }
         const out = composeSlide(bmp, m, (w, h) => new OffscreenCanvas(w, h));
         bmp.close();
@@ -1288,7 +1339,8 @@
   const jobs = new Map();
   let jobSeq = 0;
   try {
-    const code = composeSlide.toString() + '\n(' + stageWorkerMain.toString() + ')();';
+    const code = [jpegMeta, orientationFix, drawOriented, composeSlide].join('\n') +
+      '\n(' + stageWorkerMain.toString() + ')();';
     stageWorker = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
     stageWorker.onmessage = e => {
       const j = jobs.get(e.data.id);
@@ -1303,6 +1355,7 @@
     };
   } catch (e) { stageWorker = null; }
 
+  const mainOrientState = { raw: false };
   async function renderStillMain(source, o) {
     const ac = new AbortController();
     const to = setTimeout(() => ac.abort(), o.timeout);
@@ -1311,7 +1364,9 @@
       if (typeof source === 'string') {
         const res = await fetch(source, { signal: ac.signal });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        bmp = await createImageBitmap(await res.blob());
+        const blob = await res.blob();
+        bmp = await createImageBitmap(blob);
+        o = { ...o, orient: orientationFix(jpegMeta(await blob.slice(0, 262144).arrayBuffer()), bmp, mainOrientState) };
       }
       const out = composeSlide(bmp, o, (w, h) => {
         const c = document.createElement('canvas');
