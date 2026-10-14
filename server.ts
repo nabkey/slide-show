@@ -12,6 +12,7 @@
 //   GET  /api/ingest                  -> background-work status (pending conversions, timings)
 //   POST /api/settings                -> { patch: {media?, duration?, transition?, caption?, birthday?, accent?, bg?, captionColor?, captionFont?} }
 //   POST /api/override                -> { id, patch: {hidden?, date?, media?, trim?} }
+//   POST /api/overrides               -> { items: [{ id, patch }, ...] } — many overrides, one transaction
 //   POST /api/upload?name=<filename>  -> raw file body; saved to uploads/
 //   POST /api/remove-upload           -> { id }; moved to uploads/_removed/
 //   POST /api/rescan                  -> re-scan the folder
@@ -402,6 +403,11 @@ function fnRes(fn: FnDate, t: FileTimes, where = 'filename'): Res {
     if (mt.slice(0, 10) === fn.w.slice(0, 10)) return { d: mt, src: `${where} date (${fn.kind}) + file time`, conf: 'medium' };
     return { d: fn.w, src: `${where} date (${fn.kind})`, conf: where === 'filename' ? 'medium' : 'low' };
   }
+  // Only a month or year in the name: a file time inside that span is more precise
+  // and keeps a batch in its own order, so prefer it.
+  const ft = fileTimeRes(t).d;
+  const span = fn.prec === 'month' ? 7 : 4;
+  if (ft.slice(0, span) === fn.w.slice(0, span)) return { d: ft, src: `${where} ${fn.prec} (${fn.kind}) + file time`, conf: 'low' };
   return { d: fn.w, src: `${where} ${fn.prec} only`, conf: 'low' };
 }
 
@@ -1326,6 +1332,20 @@ try {
             const { id, patch } = await req.json();
             applyPatch(id, patch ?? {});
             return json({ ok: true });
+          }
+          if (p === '/api/overrides') {
+            // batch form of /api/override (library bulk edits); body may arrive as a
+            // sendBeacon text/plain payload, so parse it regardless of content type
+            const body = JSON.parse((await req.text()) || '{}');
+            if (!Array.isArray(body.items)) return json({ ok: false, error: 'items must be an array' }, 400);
+            const applyAll = db.transaction((items: Array<{ id?: unknown; patch?: Patch }>) => {
+              let n = 0;
+              for (const it of items) {
+                if (it && typeof it.id === 'string') { applyPatch(it.id, it.patch ?? {}); n++; }
+              }
+              return n;
+            });
+            return json({ ok: true, count: applyAll(body.items) });
           }
           if (p === '/api/poster') {
             const { id, time } = await req.json();

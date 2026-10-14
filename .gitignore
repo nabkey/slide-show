@@ -25,3 +25,7 @@ slideshow.db-shm
 
 # macOS cruft
 .DS_Store
+
+# Benchmark output (screenshots, JSON reports) and any local test deps
+/test/out/
+/test/node_modules/

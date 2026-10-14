@@ -458,11 +458,15 @@
     position: fixed; inset: 0; z-index: 15;
     display: none;
     flex-direction: column;
-    background: rgba(11, 9, 7, 0.97);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: rgba(11, 9, 7, 0.985);
+    /* no backdrop blur: it was invisible at this opacity but re-blurred the
+       animated grain every frame, halving the frame rate while scrolling */
   }
   #library.open { display: flex; }
+  /* nothing behind the library needs painting while it's up */
+  body.overlay #stage, body.overlay #grain, body.overlay #vignette, body.overlay #caption { visibility: hidden; }
+  body.overlay #gear { display: none; } /* it sat on top of the library's close button */
+  body.overlay #grain { animation-play-state: paused; }
   .libHead {
     display: flex; align-items: center; gap: 16px;
     padding: 16px 26px;
@@ -581,35 +585,141 @@
     background: linear-gradient(90deg, var(--preview-accent, var(--champagne)), transparent);
   }
 
+  /* Virtualized grid: only rows near the viewport exist; cards are absolutely
+     positioned (transform) inside a spacer that has the full scroll height. */
   #libGrid {
     flex: 1;
-    overflow-y: auto;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    grid-auto-rows: 172px; /* explicit rows: keeps old engines from squashing tracks to fit */
-    gap: 12px;
-    padding: 20px 26px 30px;
-    align-content: start;
-  }
-  .libCard { height: 172px; }
-  .libCard {
     position: relative;
+    overflow-y: auto;
+    overflow-x: hidden;
+    contain: strict;
+    outline: none;
+    --cw: 160px; --ch: 172px; --ih: 122px;
+  }
+  #libSpacer { width: 1px; pointer-events: none; }
+  .libCard {
+    position: absolute; top: 0; left: 0;
+    width: var(--cw); height: var(--ch);
+    contain: layout paint style;
+  }
+  .libCard {
     border: 1px solid var(--hairline);
     border-radius: 10px;
     overflow: hidden;
     background: #15120f;
     cursor: pointer;
-    transition: border-color 0.15s, transform 0.15s;
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
-  .libCard:hover { border-color: var(--champagne-deep); transform: translateY(-1px); }
+  .libCard:hover { border-color: var(--champagne-deep); }
   .libCard img {
     width: 100%;
-    height: 122px;
+    height: var(--ih);
     object-fit: cover;
     display: block;
     background: #0a0806;
   }
   .libCard.hiddenItem img { opacity: 0.3; }
+  .libCard.hiddenItem .libMeta { opacity: 0.55; }
+  /* keyboard cursor + selection (culling) */
+  .libCard.cur {
+    border-color: var(--champagne);
+    box-shadow: 0 0 0 2px var(--champagne), 0 6px 22px rgba(0,0,0,0.55);
+  }
+  .libCard.sel::before {
+    content: "\2713";
+    position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    display: grid; place-items: start end;
+    padding: 34px 9px 0 0;
+    font-size: 13px; font-weight: 700; color: #1b150d;
+    background: linear-gradient(rgba(217,185,138,0.28), rgba(217,185,138,0.12));
+    border-radius: 9px;
+  }
+  .libCard.sel { border-color: var(--champagne-deep); }
+  .libMeta .dt { font-variant-numeric: tabular-nums; }
+  .libMeta .dt i { font-style: normal; color: var(--champagne-deep); }
+  .libMeta .dt .hidTag { font-weight: 600; color: var(--danger); }
+  .badge.warn { color: var(--danger); border-color: rgba(217,138,122,0.5); }
+  .badge.dup { color: #cfe0ff; border-color: rgba(160,190,255,0.45); }
+  .badge.best { color: #1b150d; background: var(--champagne); border-color: var(--champagne); }
+  .libSec {
+    position: absolute; top: 0; left: 0; right: 0;
+    height: 38px;
+    display: flex; align-items: flex-end; gap: 12px;
+    padding: 0 26px 9px;
+    font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--champagne);
+    white-space: nowrap; overflow: hidden;
+  }
+  .libSec .n { color: var(--ink-dim); letter-spacing: 0.06em; }
+  .libSec .why { color: var(--ink-dim); font-weight: 500; letter-spacing: 0.02em; text-transform: none; overflow: hidden; text-overflow: ellipsis; }
+  .libSec button {
+    margin-left: auto;
+    font-family: var(--ui-font); font-size: 9px; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    background: none; border: none; color: var(--champagne-deep); cursor: pointer;
+  }
+  .libSec button:hover { color: var(--champagne); }
+  .chips button .chipN { opacity: 0.7; margin-left: 5px; font-variant-numeric: tabular-nums; }
+  .chips button .chipN:empty { display: none; }
+
+  /* footer: key hints, selection actions, the date/jump prompt */
+  .libFoot {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    min-height: 44px;
+    padding: 8px 26px;
+    border-top: 1px solid var(--hairline);
+    font-size: 11px; color: var(--ink-dim);
+  }
+  .libKeys { line-height: 1.7; }
+  .libKeys b { color: var(--ink); font-weight: 600; }
+  .libSel, .libPrompt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .libSel[hidden], .libPrompt[hidden], .libKeys[hidden] { display: none; }
+  .libSel .n, .libPrompt label { color: var(--champagne); font-weight: 600; letter-spacing: 0.04em; }
+  .libFoot .fbtn {
+    font-family: var(--ui-font); font-size: 10.5px; font-weight: 500;
+    padding: 5px 11px; border-radius: 999px;
+    border: 1px solid var(--hairline); background: transparent;
+    color: var(--ink-dim); cursor: pointer;
+  }
+  .libFoot .fbtn:hover { color: var(--ink); border-color: rgba(236,229,216,0.35); }
+  .libPrompt input {
+    width: 230px;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid var(--champagne-deep);
+    border-radius: 8px;
+    color: var(--ink);
+    font-family: var(--ui-font); font-size: 13px;
+    padding: 6px 10px;
+  }
+  .libPrompt input:focus { outline: none; border-color: var(--champagne); }
+  .libPrompt input.bad { border-color: var(--danger); }
+  .libPrompt .hint { font-size: 10.5px; }
+  .libMsg { margin-left: auto; color: var(--champagne); font-style: italic; font-family: var(--caption-font); font-size: 13px; }
+
+  /* loupe: one big image, same keys as the grid */
+  #libLoupe {
+    position: absolute; inset: 0; z-index: 3;
+    display: none; flex-direction: column;
+    background: #0b0907;
+  }
+  #libLoupe.open { display: flex; }
+  #libLoupe .lpImg { flex: 1; min-height: 0; display: grid; place-items: center; padding: 22px 26px 10px; }
+  #libLoupe .lpImg { position: relative; }
+  #libLoupe img { position: absolute; inset: 22px 26px 10px; width: calc(100% - 52px); height: calc(100% - 32px); object-fit: contain; display: block; }
+  #libLoupe.isHidden img { opacity: 0.35; }
+  #libLoupe .lpInfo {
+    display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
+    padding: 10px 26px 16px;
+    font-size: 12px; color: var(--ink-dim);
+  }
+  #libLoupe .lpInfo .nm { color: var(--ink); font-size: 13px; }
+  #libLoupe .lpInfo .tag { color: var(--danger); font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; font-size: 10px; }
+  #libLoupe .lpInfo .grp { color: #cfe0ff; }
+  #libLoupe .lpInfo .keys { margin-left: auto; }
+  #libLoupe .lpInfo b { color: var(--ink); }
+  .emFlag { font-size: 11px; line-height: 1.5; color: var(--danger); margin: -6px 0 14px; }
+  .emFlag button { margin-left: 6px; }
   .libMeta {
     padding: 7px 10px 9px;
     font-size: 10px;
@@ -645,7 +755,7 @@
     opacity: 0;
     transition: opacity 0.15s, color 0.15s;
   }
-  .libCard:hover .libHide, .libCard.hiddenItem .libHide { opacity: 1; }
+  .libCard:hover .libHide, .libCard.hiddenItem .libHide, .libCard.cur .libHide { opacity: 1; }
   .libHide:hover { color: var(--ink); border-color: rgba(236,229,216,0.4); }
   .libPlay {
     position: absolute;
@@ -854,12 +964,39 @@
       <button data-f="videos">Videos</button>
       <button data-f="uploads">Uploads</button>
       <button data-f="hidden">Hidden</button>
-      <button data-f="unsure" title="Dates the server could only guess (no camera metadata)">Check dates</button>
+      <button data-f="dupes" title="Near-identical shots grouped together (key 7)">Look-alikes<span class="chipN" id="chipDupes"></span></button>
+      <button data-f="dates" title="Dates that look wrong (key 8)">Check dates<span class="chipN" id="chipDates"></span></button>
     </div>
     <div class="libCount" id="libCount"></div>
     <button id="libClose" aria-label="Close">&times;</button>
   </div>
-  <div id="libGrid"></div>
+  <div id="libGrid" tabindex="-1"><div id="libSpacer"></div></div>
+  <div class="libFoot">
+    <div class="libKeys" id="libKeys">
+      <b>&larr;&uarr;&darr;&rarr;</b> move &middot; <b>X</b> hide &middot; <b>P</b> keep &middot; <b>Space</b> loupe &middot;
+      <b>Enter</b> edit &middot; <b>&#8679;Enter</b> play from here &middot; <b>S</b> select section &middot;
+      <b>D</b> set date &middot; <b>T</b> shift dates &middot; <b>J</b> jump to date &middot; <b>G</b> keep best of group &middot;
+      <b>&#8984;/Ctrl Z</b> undo &middot; <b>1&ndash;8</b> filters
+    </div>
+    <div class="libSel" id="libSel" hidden>
+      <span class="n" id="libSelN"></span>
+      <button class="fbtn" data-a="date">Set date&hellip;</button>
+      <button class="fbtn" data-a="shift">Shift dates&hellip;</button>
+      <button class="fbtn" data-a="hide">Hide</button>
+      <button class="fbtn" data-a="keep">Keep</button>
+      <button class="fbtn" data-a="clear">Clear</button>
+    </div>
+    <form class="libPrompt" id="libPrompt" hidden autocomplete="off">
+      <label for="libPromptInput" id="libPromptLabel"></label>
+      <input id="libPromptInput" spellcheck="false">
+      <span class="hint" id="libPromptHint"></span>
+    </form>
+    <div class="libMsg" id="libMsg"></div>
+  </div>
+  <div id="libLoupe">
+    <div class="lpImg"><img id="libLoupeImg" alt=""></div>
+    <div class="lpInfo" id="libLoupeInfo"></div>
+  </div>
 </div>
 
 <div id="editModal">
@@ -984,8 +1121,41 @@
       else o[k] = v;
     }
     if (Object.keys(o).length) overrides[id] = o; else delete overrides[id];
-    api('/api/override', { id, patch }).catch(() => {});
+    if ('date' in patch) libDatesDirty = true;
+    const q = pendingOv.get(id);
+    pendingOv.set(id, q ? { ...q, ...patch } : { ...patch });
+    flushOverrides();
   }
+  // Writes are coalesced per id and sent in order, one batch at a time, so a
+  // burst of keyboard triage (or a 500-photo date shift) is a handful of
+  // requests that can't overtake each other. Falls back to per-item requests
+  // against an older server without /api/overrides.
+  const pendingOv = new Map();
+  let ovInflight = null;
+  let libDatesDirty = true; // library's sorted order + date flags need recomputing
+  function flushOverrides() {
+    if (ovInflight) return ovInflight;
+    ovInflight = (async () => {
+      await null; // let the rest of this tick's edits join the batch
+      while (pendingOv.size) {
+        const items = [...pendingOv].map(([id, patch]) => ({ id, patch }));
+        pendingOv.clear();
+        try {
+          const res = await fetch('/api/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) });
+          if (!res.ok) throw new Error(res.status);
+        } catch (e) {
+          for (const it of items) await api('/api/override', it).catch(() => {});
+        }
+      }
+      ovInflight = null;
+    })();
+    return ovInflight;
+  }
+  addEventListener('pagehide', () => {
+    if (!pendingOv.size || !navigator.sendBeacon) return;
+    navigator.sendBeacon('/api/overrides', JSON.stringify({ items: [...pendingOv].map(([id, patch]) => ({ id, patch })) }));
+    pendingOv.clear();
+  });
 
   /* ---------- Global settings (stored server-side in slideshow.db) ---------- */
   const DEFAULTS = {
@@ -1049,6 +1219,7 @@
   const effDate = s => ov(s.id).date || s.d;
   // cache-bust poster frames so a re-extracted frame shows up immediately
   const imgSrc = s => src(s.img) + (s.solo && ov(s.id).poster != null ? `?v=${ov(s.id).poster}` : '');
+  const thumbUrl = s => `/api/thumb?id=${encodeURIComponent(s.id)}` + (ov(s.id).poster != null ? `&v=${ov(s.id).poster}` : '');
   const MONTHS = ['January','February','March','April','May','June',
                   'July','August','September','October','November','December'];
 
@@ -1484,6 +1655,7 @@
 
     box.innerHTML = `
       <div class="fileName" title="${esc(s.id)}">${esc(s.id)}${isUpload ? ' <em>&middot; upload</em>' : ''}${s.solo ? ' <em>&middot; video</em>' : s.vid ? ' <em>&middot; live</em>' : ''}</div>
+      ${ctx.modal ? libFlagHTML(s) : ''}
       <div class="field">
         <label>Date${o.date ? ' <button class="mini" data-e="dateReset">reset</button>' : ''}</label>
         ${dateFieldHTML(effDate(s).slice(0, 10))}
@@ -1534,6 +1706,11 @@
     };
     wireDateField(box, norm => {
       setOv(s.id, { date: norm + ' 12:00:00' });
+      afterDateChange();
+    });
+    const useSuggested = q('useSuggested');
+    if (useSuggested) useSuggested.addEventListener('click', () => {
+      setOv(s.id, { date: useSuggested.dataset.d });
       afterDateChange();
     });
     const dateReset = q('dateReset');
@@ -1672,6 +1849,7 @@
       im.src = imgSrc(s);
       prev.appendChild(im);
     }
+    if (library.classList.contains('open')) libSetCursor(s.id, { reveal: true });
     renderEditor($('emBody'), s, { modal: true });
     editModal.classList.add('open');
     syncChrome();
@@ -1697,15 +1875,17 @@
     const box = $('tab-hidden');
     const hid = ALL.filter(s => ov(s.id).hidden);
     if (!hid.length) {
-      box.innerHTML = '<div class="hint" style="border:none;margin:0;padding:0">Nothing hidden. The hide button lives in the <b>Slide</b> tab.</div>';
+      box.innerHTML = '<div class="hint" style="border:none;margin:0;padding:0">Nothing hidden. The hide button lives in the <b>Slide</b> tab, or press <b>X</b> in the Library.</div>';
       return;
     }
     box.innerHTML = `
       <div id="hiddenGrid">${hid.map(s =>
-        `<button class="thumb" data-id="${esc(s.id)}" title="${esc(s.id)}"><img loading="lazy" src="${esc(imgSrc(s))}"></button>`
+        `<button class="thumb" data-id="${esc(s.id)}" title="${esc(s.id)}"><img loading="lazy" decoding="async" src="${esc(thumbUrl(s))}"></button>`
       ).join('')}</div>
+      <button class="btnGhost" id="hiddenInLib" style="margin-bottom:8px">Review in library&hellip;</button>
       <button class="btnGhost" id="unhideAll">Unhide all (${hid.length})</button>
     `;
+    $('hiddenInLib').addEventListener('click', () => { openLibrary(); setLibFilter('hidden'); });
     $('hiddenGrid').addEventListener('click', e => {
       const b = e.target.closest('.thumb');
       if (!b) return;
@@ -1715,6 +1895,7 @@
       renderHiddenTab();
     });
     $('unhideAll').addEventListener('click', () => {
+      libRecord(hid.map(s => ({ id: s.id, patch: { hidden: null } })), `unhid ${hid.length}`);
       for (const s of hid) setOv(s.id, { hidden: null });
       rebuildKeeping(cur());
       if (idx < 0 && list.length) show(0, 1);
@@ -1723,51 +1904,1014 @@
   }
 
   /* ---------- Library overlay ---------- */
+  // A keyboard-first culling grid built for thousands of items:
+  //  - virtualized: only rows near the viewport are in the DOM and card nodes are
+  //    recycled, so opening, scrolling and toggling stay cheap at 3,000+ items;
+  //  - a cursor + selection model (arrows, X hide, P keep, auto-advance, undo);
+  //  - look-alike groups from a perceptual hash of the thumbnails (in a worker);
+  //  - suspicious-date detection and bulk set/shift of dates.
+  // Every change still goes through setOv() → the server's non-destructive overrides.
   const library = $('library');
+  const grid = $('libGrid');
+  const spacer = $('libSpacer');
+  const LIB_FILTERS = ['all', 'photos', 'live', 'videos', 'uploads', 'hidden', 'dupes', 'dates'];
+  const HEAD_H = 38, GAP = 12, PAD_X = 26, PAD_TOP = 4, META_H = 50;
+  const ZOOMS = [110, 160, 230, 330];
+  const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+  let zoom = Math.min(ZOOMS.length - 1, Math.max(0, parseInt(lsGet('slideshow.libZoom') ?? '1', 10) || 0));
   let libFilter = 'all';
+  let view = [];            // slides in display order for the current filter
+  let sections = [];        // { key, label, why, start, end } — index ranges into view
+  let rows = [];            // { head } | { start, end }, each with top/h (px)
+  let rowOf = new Int32Array(0);
+  let posOf = new Map();    // id -> index in view
+  let byId = new Map();
+  let geo = { cols: 1, cw: 160, ch: 172 };
+  let cursorId = null, anchorId = null;
+  const selected = new Set();
+  const mounted = new Map(); // 'c:'+id / 'h:'+key -> element
+  const cardPool = [], headPool = [];
+  let dateFlags = new Map(); // id -> [{ r, label, suggest? }]
+  const effSort = (a, b) => {
+    const da = effDate(a), db = effDate(b);
+    return da < db ? -1 : da > db ? 1 : a.id < b.id ? -1 : 1;
+  };
+  const validDate = d => /^\d{4}-\d{2}-\d{2}/.test(d || '') && !/^0000/.test(d);
+  const monthLabel = ym => validDate(ym + '-01') ? `${MONTHS[+ym.slice(5, 7) - 1]} ${ym.slice(0, 4)}` : 'No date';
+  function rangeLabel(a, b) {
+    if (a === b || !validDate(a + '-01') || !validDate(b + '-01')) return monthLabel(a);
+    const [ya, ma] = [a.slice(0, 4), MONTHS[+a.slice(5, 7) - 1]], [yb, mb] = [b.slice(0, 4), MONTHS[+b.slice(5, 7) - 1]];
+    return ya === yb ? `${ma} – ${mb} ${ya}` : `${ma} ${ya} – ${mb} ${yb}`;
+  }
+  const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`;
 
-  function libItems() {
-    const sorted = [...ALL].sort((a, b) => {
-      const da = effDate(a), db = effDate(b);
-      return da < db ? -1 : da > db ? 1 : a.id < b.id ? -1 : 1;
-    });
-    return sorted.filter(s => {
-      const o = ov(s.id);
-      switch (libFilter) {
-        case 'photos': return !s.vid;
-        case 'live': return !!s.vid && !s.solo;
-        case 'videos': return !!s.solo;
-        case 'uploads': return s.id.startsWith('uploads/');
-        case 'hidden': return !!o.hidden;
-        case 'unsure': return s.dateConfidence === 'low' && !o.date;
-        default: return true;
+  /* --- date arithmetic on the naive 'YYYY-MM-DD HH:MM:SS' strings --- */
+  const p2 = n => String(n).padStart(2, '0');
+  function dParse(d) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(d || '');
+    return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 12), +(m[5] || 0), +(m[6] || 0)) : NaN;
+  }
+  function dFmt(t) {
+    const x = new Date(t);
+    return `${String(x.getUTCFullYear()).padStart(4, '0')}-${p2(x.getUTCMonth() + 1)}-${p2(x.getUTCDate())} ` +
+      `${p2(x.getUTCHours())}:${p2(x.getUTCMinutes())}:${p2(x.getUTCSeconds())}`;
+  }
+  // "+1y", "-3h", "+2d 6h", "-1 year", "+18mo", "+90min"
+  function parseShift(str) {
+    const toks = (str || '').trim().toLowerCase().match(/[+-]?\s*\d+(?:\.\d+)?\s*[a-z]*/g);
+    if (!toks || toks.join('').replace(/\s/g, '') !== str.trim().toLowerCase().replace(/\s/g, '')) return null;
+    let sign = 1;
+    const out = { y: 0, mo: 0, ms: 0 };
+    for (const [k, tok] of toks.entries()) {
+      const m = /^([+-]?)\s*(\d+(?:\.\d+)?)\s*([a-z]*)$/.exec(tok.trim());
+      if (!m) return null;
+      if (m[1]) sign = m[1] === '-' ? -1 : 1; else if (k === 0) sign = 1;
+      const n = sign * parseFloat(m[2]);
+      const u = m[3];
+      if (/^(y|yr|yrs|year|years)$/.test(u)) out.y += n;
+      else if (/^(mo|mon|mos|month|months)$/.test(u)) out.mo += n;
+      else if (/^(w|wk|wks|week|weeks)$/.test(u)) out.ms += n * 7 * 864e5;
+      else if (/^(d|day|days)$/.test(u)) out.ms += n * 864e5;
+      else if (/^(h|hr|hrs|hour|hours)$/.test(u)) out.ms += n * 36e5;
+      else if (/^(m|min|mins|minute|minutes)$/.test(u)) out.ms += n * 6e4;
+      else return null;
+    }
+    if (!out.y && !out.mo && !out.ms) return null;
+    return out;
+  }
+  function applyShift(d, sh) {
+    const t = dParse(d);
+    if (isNaN(t)) return null;
+    const x = new Date(t);
+    const months = Math.round(sh.y * 12 + sh.mo);
+    if (months) x.setUTCMonth(x.getUTCMonth() + months);
+    return dFmt(x.getTime() + sh.ms);
+  }
+  const SEASONS = { spring: '04-15', summer: '07-15', fall: '10-15', autumn: '10-15', winter: '01-15', christmas: '12-25', xmas: '12-25', 'new year': '01-01' };
+  // A day for "set date": everything the editor accepts, plus "summer 1994", "Christmas 2003".
+  function parseFuzzyDay(str) {
+    const m = /^\s*(spring|summer|fall|autumn|winter|christmas|xmas|new year)\s*(?:of\s*)?(\d{4})\s*$/i.exec(str || '');
+    if (m) return `${m[2]}-${SEASONS[m[1].toLowerCase()]}`;
+    const v = parseDateInput(str);
+    return v || null;
+  }
+
+  /* --- suspicious dates (archivist heuristics) --- */
+  // Only dates that came from the files are judged; a date the host typed in is trusted.
+  const DEFAULT_DATE = /^(1904|1970|1980|2000|2001|2002|2010)-01-01 0[01]:/;
+  const FLAG_ORDER = ['future', 'default', 'shared', 'sequence', 'source'];
+  // the server says how sure it is of each date ("high" | "medium" | "low")
+  const dateSourceLow = s => s.dateConfidence === 'low';
+  function computeDateFlags() {
+    const flags = new Map();
+    const add = (id, f) => { const a = flags.get(id); if (a) a.push(f); else flags.set(id, [f]); };
+    const now = new Date(Date.now() + 864e5);
+    const tomorrow = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`;
+    const judged = ALL.filter(s => !ov(s.id).date);
+    const byStamp = new Map();
+    const series = new Map();
+    for (const s of judged) {
+      const d = s.d || '';
+      if (d > tomorrow && !d.startsWith('9999')) add(s.id, { r: 'future', label: 'dated in the future' });
+      else if (!validDate(d) || DEFAULT_DATE.test(d) || +d.slice(0, 4) < 1900) add(s.id, { r: 'default', label: validDate(d) ? 'a camera-default date' : 'no usable date' });
+      if (dateSourceLow(s)) add(s.id, { r: 'source', label: `only a weak clue to go on: ${s.dateSource || 'no date metadata'}` });
+      const g = byStamp.get(d); if (g) g.push(s); else byStamp.set(d, [s]);
+      // numbered file series: IMG_0412, DSC01234, scan-007 … (date-named files form no series)
+      const m = /^(.*?)(\d{3,6})(\.[^./]+)?$/.exec(s.id);
+      if (m && !/\d{6}[_-]?$/.test(m[1])) {
+        const key = m[1].toLowerCase();
+        const arr = series.get(key); if (arr) arr.push([+m[2], s]); else series.set(key, [[+m[2], s]]);
       }
-    });
+    }
+    for (const [d, g] of byStamp) {
+      if (g.length >= 6) for (const s of g) add(s.id, { r: 'shared', key: d, label: `shares one timestamp with ${g.length - 1} others` });
+    }
+    for (const arr of series.values()) {
+      if (arr.length < 8) continue;
+      arr.sort((a, b) => a[0] - b[0]);
+      const t = arr.map(([, s]) => dParse(s.d));
+      // only a roll that is chronological overall (as camera numbering is) can
+      // vouch for its members
+      let inOrder = 0;
+      for (let i = 1; i < t.length; i++) if (t[i] >= t[i - 1]) inOrder++;
+      if (inOrder < 0.85 * (t.length - 1)) continue;
+      for (let i = 0; i < arr.length; i++) {
+        const nb = [];
+        for (let k = Math.max(0, i - 3); k <= Math.min(arr.length - 1, i + 3); k++) {
+          if (k !== i && Math.abs(arr[k][0] - arr[i][0]) <= 40 && !isNaN(t[k])) nb.push(t[k]);
+        }
+        if (nb.length < 4 || isNaN(t[i])) continue;
+        nb.sort((a, b) => a - b);
+        const med = nb[nb.length >> 1];
+        const spread = nb[nb.length - 2] - nb[1]; // ignore one stray neighbour each side
+        if (spread <= 60 * 864e5 && Math.abs(t[i] - med) > 180 * 864e5) {
+          // suggest: between the nearest numbered neighbours
+          const prev = i > 0 ? t[i - 1] : NaN, next = i < arr.length - 1 ? t[i + 1] : NaN;
+          const sug = !isNaN(prev) && !isNaN(next) && Math.abs(next - prev) < 60 * 864e5 ? (prev + next) / 2 : med;
+          add(arr[i][1].id, { r: 'sequence', label: `out of sequence with neighbouring file numbers (they're ~${dFmt(med).slice(0, 7)})`, suggest: dFmt(Math.round(sug / 1000) * 1000) });
+        }
+      }
+    }
+    for (const a of flags.values()) a.sort((x, y) => FLAG_ORDER.indexOf(x.r) - FLAG_ORDER.indexOf(y.r));
+    return flags;
+  }
+  function libFlagHTML(s) {
+    const fl = dateFlags.get(s.id);
+    if (!fl) return '';
+    const sug = fl.find(f => f.suggest);
+    return `<div class="emFlag">Date looks suspicious: ${esc(fl.map(f => f.label).join('; '))}.` +
+      (sug ? ` <button class="mini" data-e="useSuggested" data-d="${esc(sug.suggest)}">use ${esc(sug.suggest.slice(0, 10))}</button>` : '') + '</div>';
   }
 
-  function renderLibrary() {
-    const items = libItems();
-    $('libCount').textContent = `${items.length} item${items.length === 1 ? '' : 's'}`;
-    $('libGrid').innerHTML = items.map(s => {
-      const o = ov(s.id);
-      const badges = [
-        s.solo ? 'video' : s.vid ? 'live' : null,
-        s.id.startsWith('uploads/') ? 'upload' : null,
-        o.hidden ? 'hidden' : null,
-        s.dateConfidence === 'low' && !o.date ? 'date?' : null,
-      ].filter(Boolean).map(b => `<span class="badge">${b}</span>`).join('');
-      const v = o.poster != null ? `&v=${o.poster}` : '';
-      return `<div class="libCard${o.hidden ? ' hiddenItem' : ''}" data-id="${esc(s.id)}">
-        <img loading="lazy" src="/api/thumb?id=${encodeURIComponent(s.id)}${v}" alt="">
-        <div class="badges">${badges}</div>
-        <button class="libHide" data-id="${esc(s.id)}">${o.hidden ? 'Show' : 'Hide'}</button>
-        <button class="libPlay" data-id="${esc(s.id)}" title="Start the show here">
-          <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 1.2v9.6L10.5 6z"/></svg>
-        </button>
-        <div class="libMeta" title="${esc(o.date ? 'Date set by hand' : 'Date from ' + (s.dateSource || 'unknown'))}"><div class="nm">${esc(s.id.replace(/^uploads\//, ''))}</div>${effDate(s).slice(0, 10)}</div>
-      </div>`;
-    }).join('');
+  /* --- look-alike groups: dHash + colour + sharpness of each thumbnail --- */
+  // analyzePixels runs in a worker (stringified below) or on the main thread as a fallback.
+  // a: 72x64 RGBA → 9x8 box-averaged luma → 64-bit difference hash + mean colour;
+  // b: 128x96 RGBA → variance of the Laplacian (higher = sharper).
+  function analyzePixels(a, b) {
+    const L = new Float32Array(72);
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 72; x++) {
+      const i = (y * 72 + x) * 4;
+      L[(y >> 3) * 9 + (x >> 3)] += 0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2];
+    }
+    let h1 = 0, h2 = 0;
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+      const bit = L[y * 9 + x] < L[y * 9 + x + 1] ? 1 : 0;
+      if (y < 4) h1 = (h1 << 1 | bit) >>> 0; else h2 = (h2 << 1 | bit) >>> 0;
+    }
+    let r = 0, g = 0, bl = 0;
+    for (let i = 0; i < a.length; i += 4) { r += a[i]; g += a[i + 1]; bl += a[i + 2]; }
+    const n = a.length / 4;
+    const W = 128, H = 96, gray = new Float32Array(W * H);
+    for (let i = 0; i < W * H; i++) gray[i] = 0.299 * b[i * 4] + 0.587 * b[i * 4 + 1] + 0.114 * b[i * 4 + 2];
+    let sum = 0, sum2 = 0, cnt = 0;
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      const i = y * W + x;
+      const v = gray[i - 1] + gray[i + 1] + gray[i - W] + gray[i + W] - 4 * gray[i];
+      sum += v; sum2 += v * v; cnt++;
+    }
+    return { h1, h2, c: [Math.round(r / n), Math.round(g / n), Math.round(bl / n)], sh: Math.round(sum2 / cnt - (sum / cnt) ** 2) };
   }
+  const WORKER_SRC = `const analyzePixels = ${analyzePixels.toString()};
+    const ctxA = new OffscreenCanvas(72, 64).getContext('2d', { willReadFrequently: true });
+    const ctxB = new OffscreenCanvas(128, 96).getContext('2d', { willReadFrequently: true });
+    ctxA.imageSmoothingQuality = ctxB.imageSmoothingQuality = 'high';
+    let queue = [], active = 0, conc = 3, paused = false;
+    async function one(job) {
+      try {
+        const blob = await (await fetch(job.url)).blob();
+        const bmp = await createImageBitmap(blob);
+        ctxA.drawImage(bmp, 0, 0, 72, 64);
+        ctxB.drawImage(bmp, 0, 0, 128, 96);
+        bmp.close && bmp.close();
+        const r = analyzePixels(ctxA.getImageData(0, 0, 72, 64).data, ctxB.getImageData(0, 0, 128, 96).data);
+        postMessage({ id: job.id, sig: job.sig, ...r });
+      } catch (e) { postMessage({ id: job.id, sig: job.sig, err: 1 }); }
+    }
+    function pump() {
+      while (!paused && active < conc && queue.length) {
+        active++;
+        one(queue.shift()).then(() => { active--; pump(); });
+      }
+    }
+    onmessage = e => {
+      if ('pause' in e.data) { paused = e.data.pause; pump(); return; }
+      queue = queue.concat(e.data.jobs); conc = e.data.concurrency || conc; pump();
+    };`;
+  const HASH_KEY = 'slideshow.lookalike.v1';
+  const hashes = new Map(); // id -> { sig, h1, h2, c, sh }
+  const hashSt = { total: 0, done: 0, running: false, finished: false, loaded: false };
+  let hashWorker = null, regroupTimer = null, saveTimer = null;
+  let dupGroups = [];        // [{ key, ids, best, t0 }] in date order
+  let groupOf = new Map();   // id -> group
+  const thumbSig = s => s.img + '|' + (ov(s.id).poster ?? '');
+
+  function loadHashes() {
+    if (hashSt.loaded) return;
+    hashSt.loaded = true;
+    try {
+      const raw = JSON.parse(lsGet(HASH_KEY) || '{}');
+      for (const [id, v] of Object.entries(raw)) hashes.set(id, { sig: v[0], h1: v[1], h2: v[2], c: v[3], sh: v[4] });
+    } catch (e) {}
+  }
+  function saveHashes() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const out = {};
+      for (const [id, v] of hashes) out[id] = [v.sig, v.h1, v.h2, v.c, v.sh];
+      lsSet(HASH_KEY, JSON.stringify(out));
+    }, 400);
+  }
+  function startHashing() {
+    loadHashes();
+    if (hashSt.running) return;
+    const todo = ALL.filter(s => { const h = hashes.get(s.id); return !h || h.sig !== thumbSig(s); });
+    hashSt.total = ALL.length;
+    hashSt.done = ALL.length - todo.length;
+    if (!todo.length) { if (!hashSt.finished || groupedFor !== ALL) finishHashing(); return; }
+    hashSt.running = true;
+    hashSt.finished = false;
+    // visible-first: current view order, then everything else
+    const todoSet = new Set(todo);
+    const order = [...view.filter(s => todoSet.has(s)), ...todo];
+    const seen = new Set();
+    const jobs = [];
+    // absolute URLs: a blob: worker can't resolve '/api/thumb' on its own
+    for (const s of order) if (!seen.has(s.id)) { seen.add(s.id); jobs.push({ id: s.id, url: new URL(thumbUrl(s), location.href).href, sig: thumbSig(s) }); }
+    const onResult = r => {
+      if (!r.err) hashes.set(r.id, { sig: r.sig, h1: r.h1, h2: r.h2, c: r.c, sh: r.sh });
+      hashSt.done++;
+      // groups are computed once at the end; meanwhile just tick the progress chip
+      if (hashSt.done >= hashSt.total) finishHashing();
+      else if (!regroupTimer) regroupTimer = setTimeout(() => { regroupTimer = null; if (library.classList.contains('open')) libHeader(); }, 500);
+    };
+    try {
+      if (!hashWorker) {
+        if (typeof OffscreenCanvas === 'undefined') throw new Error('no OffscreenCanvas');
+        hashWorker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })));
+      }
+      hashWorker.onmessage = e => onResult(e.data);
+      hashWorker.onerror = () => { hashWorker = null; mainThreadHash(jobs.filter(j => !hashes.has(j.id)), onResult); };
+      hashWorker.postMessage({ jobs, concurrency: 3 });
+    } catch (e) {
+      hashWorker = null;
+      mainThreadHash(jobs, onResult);
+    }
+  }
+  // Fallback for browsers without OffscreenCanvas in workers: two at a time, idle-paced.
+  function mainThreadHash(jobs, onResult) {
+    const ca = document.createElement('canvas'); ca.width = 72; ca.height = 64;
+    const cb = document.createElement('canvas'); cb.width = 128; cb.height = 96;
+    const xa = ca.getContext('2d', { willReadFrequently: true }), xb = cb.getContext('2d', { willReadFrequently: true });
+    let i = 0;
+    const next = () => {
+      if (i >= jobs.length) return;
+      const job = jobs[i++];
+      const im = new Image();
+      im.onload = () => {
+        try {
+          xa.drawImage(im, 0, 0, 72, 64); xb.drawImage(im, 0, 0, 128, 96);
+          onResult({ id: job.id, sig: job.sig, ...analyzePixels(xa.getImageData(0, 0, 72, 64).data, xb.getImageData(0, 0, 128, 96).data) });
+        } catch (e) { onResult({ id: job.id, err: 1 }); }
+        setTimeout(next, 0);
+      };
+      im.onerror = () => { onResult({ id: job.id, err: 1 }); setTimeout(next, 0); };
+      im.src = job.url;
+    };
+    next(); next();
+  }
+  function finishHashing() {
+    hashSt.running = false;
+    hashSt.finished = true;
+    clearTimeout(regroupTimer); regroupTimer = null;
+    saveHashes();
+    regroup(true);
+  }
+  const popcnt = x => {
+    x -= (x >>> 1) & 0x55555555;
+    x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+    return (Math.imul((x + (x >>> 4)) & 0x0f0f0f0f, 0x01010101) >>> 24);
+  };
+  // Union-find over all pairs (cheap: 64-bit popcount, early-out). Any two shots
+  // whose hashes and mean colours all but match are look-alikes (re-saves,
+  // copies); within three minutes of each other (a burst) the bar is looser.
+  // Tuned on test/fixtures.mjs: re-saves sit at <=2 bits / <=1 colour, burst
+  // neighbours up to ~7 bits / ~20 colour, unrelated collisions at >=14 colour.
+  let groupedFor = null;
+  function regroup(final) {
+    const t0 = performance.now();
+    groupedFor = ALL;
+    const items = ALL.filter(s => hashes.has(s.id));
+    const n = items.length;
+    const H1 = new Uint32Array(n), H2 = new Uint32Array(n), T = new Float64Array(n), C = new Int16Array(n * 3);
+    items.forEach((s, i) => {
+      const h = hashes.get(s.id);
+      H1[i] = h.h1; H2[i] = h.h2; T[i] = dParse(effDate(s));
+      C[i * 3] = h.c[0]; C[i * 3 + 1] = h.c[1]; C[i * 3 + 2] = h.c[2];
+    });
+    const parent = new Int32Array(n).map((_, i) => i);
+    const find = i => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+    for (let i = 0; i < n; i++) {
+      const a1 = H1[i], a2 = H2[i], ti = T[i];
+      for (let j = i + 1; j < n; j++) {
+        const d = popcnt(a1 ^ H1[j]) + popcnt(a2 ^ H2[j]);
+        if (d > 12) continue;
+        const cd = Math.abs(C[i * 3] - C[j * 3]) + Math.abs(C[i * 3 + 1] - C[j * 3 + 1]) + Math.abs(C[i * 3 + 2] - C[j * 3 + 2]);
+        const near = Math.abs(ti - T[j]) <= 180000;
+        if ((d <= 3 && cd <= 12) || (near && cd <= 60)) {
+          const ri = find(i), rj = find(j);
+          if (ri !== rj) parent[ri] = rj;
+        }
+      }
+    }
+    const buckets = new Map();
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      const b = buckets.get(r); if (b) b.push(items[i]); else buckets.set(r, [items[i]]);
+    }
+    dupGroups = [];
+    groupOf = new Map();
+    for (const members of buckets.values()) {
+      if (members.length < 2) continue;
+      members.sort(effSort);
+      let best = members[0];
+      for (const s of members) if (hashes.get(s.id).sh > hashes.get(best.id).sh) best = s;
+      const g = { key: 'g:' + members[0].id, ids: members.map(s => s.id), best: best.id, t0: effDate(members[0]) };
+      dupGroups.push(g);
+      for (const s of members) groupOf.set(s.id, g);
+    }
+    dupGroups.sort((a, b) => (a.t0 < b.t0 ? -1 : a.t0 > b.t0 ? 1 : 0));
+    hashSt.regroupMs = Math.round(performance.now() - t0);
+    if (!library.classList.contains('open')) return;
+    if (libFilter === 'dupes' && final) libRebuild({ keepCursor: true });
+    else { libPaintAll(); libHeader(); }
+  }
+
+  /* --- view model --- */
+  let sortedAll = [], viewFor = null;
+  function computeView() {
+    // order + date flags only change with dates or the item list, not with hiding
+    if (libDatesDirty || viewFor !== ALL) {
+      if (viewFor !== ALL) byId = new Map(ALL.map(s => [s.id, s]));
+      dateFlags = computeDateFlags();
+      sortedAll = [...ALL].sort(effSort);
+      viewFor = ALL;
+      libDatesDirty = false;
+    }
+    const sorted = sortedAll;
+    sections = [];
+    if (libFilter === 'dupes') {
+      view = [];
+      for (const g of dupGroups) {
+        const start = view.length;
+        for (const id of g.ids) if (byId.has(id)) view.push(byId.get(id));
+        if (view.length > start) {
+          const hid = g.ids.filter(id => ov(id).hidden).length;
+          sections.push({ key: g.key, label: `${g.ids.length} look-alikes · ${monthLabel(g.t0)}`, start, end: view.length,
+            why: hid ? `${hid} hidden` : sections.length ? '' : '★ = sharpest · G keeps the one under the cursor and hides the rest' });
+        }
+      }
+    } else if (libFilter === 'dates') {
+      view = [];
+      const buckets = new Map();
+      for (const s of sorted) {
+        const f = dateFlags.get(s.id);
+        if (!f) continue;
+        const k = f[0].r === 'shared' ? 'shared:' + f[0].key : f[0].r;
+        const b = buckets.get(k); if (b) b.push(s); else buckets.set(k, [s]);
+      }
+      const label = k => k === 'future' ? 'Dated in the future'
+        : k === 'default' ? 'Camera-default dates'
+        : k.startsWith('shared:') ? `Share one timestamp · ${k.slice(7)}`
+        : k === 'sequence' ? 'Out of sequence'
+        : 'No camera date';
+      const why = k => k === 'future' ? 'the camera clock was wrong'
+        : k === 'default' ? 'a reset clock (1970 / 2000-01-01…)'
+        : k.startsWith('shared:') ? 'a scanner or a file copy stamped them all — D sets one date, keeping their order'
+        : k === 'sequence' ? 'their file numbers say otherwise — M uses the neighbours’ date'
+        : 'dated from the file, not the camera';
+      const keys = [...buckets.keys()].sort((a, b) => FLAG_ORDER.indexOf(a.split(':')[0]) - FLAG_ORDER.indexOf(b.split(':')[0]) || (a < b ? -1 : 1));
+      for (const k of keys) {
+        const items = buckets.get(k);
+        if (k.startsWith('shared:') || k === 'sequence') items.sort((a, b) => (a.id < b.id ? -1 : 1)); // file order
+        const start = view.length;
+        view.push(...items);
+        sections.push({ key: k, label: label(k), why: why(k), start, end: view.length });
+      }
+    } else {
+      view = sorted.filter(s => {
+        switch (libFilter) {
+          case 'photos': return !s.vid;
+          case 'live': return !!s.vid && !s.solo;
+          case 'videos': return !!s.solo;
+          case 'uploads': return s.id.startsWith('uploads/');
+          case 'hidden': return !!ov(s.id).hidden;
+          default: return true;
+        }
+      });
+      // month sections; runs of sparse months share one (so a decade of
+      // one-photo months doesn't become a page of one-card rows)
+      const months = [];
+      view.forEach((s, i) => {
+        const ym = effDate(s).slice(0, 7);
+        const m = months[months.length - 1];
+        if (m && m.key === ym) m.end = i + 1; else months.push({ key: ym, start: i, end: i + 1 });
+      });
+      for (const m of months) {
+        const last = sections[sections.length - 1];
+        const n = m.end - m.start;
+        if (last && last.sparse && n < geo.cols && last.end - last.start < geo.cols &&
+            validDate(m.key + '-01') && validDate(last.key + '-01')) {
+          last.last = m.key;
+          last.end = m.end;
+        } else sections.push({ key: m.key, last: m.key, start: m.start, end: m.end, sparse: n < geo.cols });
+      }
+      for (const sec of sections) sec.label = rangeLabel(sec.key, sec.last);
+    }
+    posOf = new Map(view.map((s, i) => [s.id, i]));
+  }
+
+  function libGeometry() {
+    const inner = Math.max(100, grid.clientWidth - PAD_X * 2);
+    const min = ZOOMS[zoom];
+    const cols = Math.max(1, Math.floor((inner + GAP) / (min + GAP)));
+    const cw = Math.floor((inner - GAP * (cols - 1)) / cols);
+    const ih = Math.round(cw * 0.7);
+    geo = { cols, cw, ch: ih + META_H, ih };
+    grid.style.setProperty('--cw', cw + 'px');
+    grid.style.setProperty('--ch', geo.ch + 'px');
+    grid.style.setProperty('--ih', ih + 'px');
+  }
+  function libLayout() {
+    rows = [];
+    rowOf = new Int32Array(view.length);
+    let y = PAD_TOP;
+    for (const sec of sections) {
+      rows.push({ head: sec, top: y, h: HEAD_H });
+      y += HEAD_H;
+      for (let i = sec.start; i < sec.end; i += geo.cols) {
+        const r = { start: i, end: Math.min(i + geo.cols, sec.end), top: y, h: geo.ch };
+        for (let k = r.start; k < r.end; k++) rowOf[k] = rows.length;
+        rows.push(r);
+        y += geo.ch + GAP;
+      }
+    }
+    spacer.style.height = (y + 24) + 'px';
+  }
+
+  /* --- rendering (windowed) --- */
+  let scrollFast = false, lastTop = 0, idleTimer2 = null;
+  function makeCard() {
+    const el = document.createElement('div');
+    el.className = 'libCard';
+    el.innerHTML = `<img alt="" decoding="async" draggable="false"><div class="badges"></div>` +
+      `<button class="libHide" tabindex="-1"></button>` +
+      `<button class="libPlay" tabindex="-1" title="Start the show here"><svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 1.2v9.6L10.5 6z"/></svg></button>` +
+      `<div class="libMeta"><div class="nm"></div><div class="dt"></div></div>`;
+    el._img = el.children[0]; el._badges = el.children[1]; el._hide = el.children[2];
+    el._nm = el.querySelector('.nm'); el._dt = el.querySelector('.dt');
+    return el;
+  }
+  function paintCard(el, s) {
+    const o = ov(s.id);
+    const fl = dateFlags.get(s.id);
+    const g = groupOf.get(s.id);
+    const sig = [s.id, o.hidden ? 1 : 0, effDate(s), o.date ? 1 : 0, o.poster ?? '', fl ? fl.map(f => f.r).join() : '',
+      g ? g.ids.length + (g.best === s.id ? '*' : '') : '', s.id === cursorId ? 1 : 0, selected.has(s.id) ? 1 : 0].join('|');
+    if (el._sig === sig) return;
+    el._sig = sig;
+    if (el.dataset.id !== s.id) {
+      el.dataset.id = s.id;
+      el._nm.textContent = s.id.replace(/^uploads\//, '');
+      el._nm.title = s.id;
+    }
+    const url = thumbUrl(s);
+    if (el._src !== url) {
+      el._src = url;
+      el._img.removeAttribute('src'); // cancels an in-flight load for the old item
+      if (scrollFast) el._pending = true; else { el._pending = false; el._img.src = url; }
+    }
+    el.className = 'libCard' + (o.hidden ? ' hiddenItem' : '') + (s.id === cursorId ? ' cur' : '') + (selected.has(s.id) ? ' sel' : '');
+    el._hide.textContent = o.hidden ? 'Show' : 'Hide';
+    el._dt.title = o.date ? 'Date set by hand' : 'Date from ' + (s.dateSource || 'unknown');
+    el._dt.innerHTML = (validDate(effDate(s)) ? esc(effDate(s).slice(0, 10)) : 'no date') + (o.date ? ' <i title="date edited">&#9998;</i>' : '') +
+      (o.hidden ? ' &middot; <b class="hidTag">hidden</b>' : '');
+    let b = '';
+    if (s.solo) b += '<span class="badge">video</span>'; else if (s.vid) b += '<span class="badge">live</span>';
+    if (s.id.startsWith('uploads/')) b += '<span class="badge">upload</span>';
+    if (g) b += g.best === s.id ? `<span class="badge best" title="sharpest of ${g.ids.length} look-alikes">&#9733; ${g.ids.length}</span>` : `<span class="badge dup" title="one of ${g.ids.length} look-alikes">&times;${g.ids.length}</span>`;
+    if (fl) b += `<span class="badge warn" title="${esc(fl.map(f => f.label).join('; '))}">date?</span>`;
+    el._badges.innerHTML = b;
+  }
+  function paintHead(el, sec) {
+    const sig = sec.key + '|' + sec.label + '|' + (sec.end - sec.start) + '|' + sec.why;
+    if (el._sig === sig) return;
+    el._sig = sig;
+    el.dataset.sec = sec.key;
+    el.innerHTML = `<span>${esc(sec.label)}</span><span class="n">${(sec.end - sec.start).toLocaleString()}</span>` +
+      (sec.why ? `<span class="why">${esc(sec.why)}</span>` : '') + `<button data-a="selsec" tabindex="-1">select</button>`;
+  }
+  function libRender() {
+    if (!library.classList.contains('open')) return;
+    const top = grid.scrollTop, vh = grid.clientHeight || 800;
+    const dy = Math.abs(top - lastTop);
+    lastTop = top;
+    scrollFast = dy > vh * 0.3;
+    const y0 = top - vh * 0.6, y1 = top + vh * 1.6;
+    let lo = 0, hi = rows.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (rows[m].top + rows[m].h < y0) lo = m + 1; else hi = m; }
+    const want = [];
+    for (let r = lo; r < rows.length && rows[r].top <= y1; r++) want.push(r);
+    const keep = new Set();
+    for (const r of want) {
+      const row = rows[r];
+      if (row.head) keep.add('h:' + row.head.key);
+      else for (let i = row.start; i < row.end; i++) keep.add('c:' + view[i].id);
+    }
+    for (const [k, el] of mounted) {
+      if (keep.has(k)) continue;
+      mounted.delete(k);
+      if (k[0] === 'c') { el.style.display = 'none'; cardPool.push(el); }
+      else { el.style.display = 'none'; headPool.push(el); }
+    }
+    const frag = document.createDocumentFragment();
+    for (const r of want) {
+      const row = rows[r];
+      if (row.head) {
+        const k = 'h:' + row.head.key;
+        let el = mounted.get(k);
+        if (!el) {
+          el = headPool.pop();
+          if (!el) { el = document.createElement('div'); el.className = 'libSec'; frag.appendChild(el); }
+          el.style.display = '';
+          mounted.set(k, el);
+        }
+        paintHead(el, row.head);
+        const tf = `translateY(${row.top}px)`;
+        if (el._tf !== tf) { el._tf = tf; el.style.transform = tf; }
+        continue;
+      }
+      for (let i = row.start; i < row.end; i++) {
+        const s = view[i];
+        const k = 'c:' + s.id;
+        let el = mounted.get(k);
+        if (!el) {
+          el = cardPool.pop();
+          if (!el) { el = makeCard(); frag.appendChild(el); }
+          el.style.display = '';
+          mounted.set(k, el);
+        }
+        paintCard(el, s);
+        const tf = `translate(${PAD_X + (i - row.start) * (geo.cw + GAP)}px,${row.top}px)`;
+        if (el._tf !== tf) { el._tf = tf; el.style.transform = tf; }
+      }
+    }
+    if (frag.childNodes.length) grid.appendChild(frag);
+    if (!scrollFast) loadPending();
+    clearTimeout(idleTimer2);
+    idleTimer2 = setTimeout(() => { scrollFast = false; loadPending(); }, 120);
+  }
+  function loadPending() {
+    for (const [k, el] of mounted) if (k[0] === 'c' && el._pending) { el._pending = false; el._img.src = el._src; }
+  }
+  // the background look-alike scan yields its connections and CPU while you scroll
+  let hashPaused = false, hashResumeT = null;
+  function hashYield() {
+    if (!hashWorker || !hashSt.running) return;
+    if (!hashPaused) { hashPaused = true; hashWorker.postMessage({ pause: true }); }
+    clearTimeout(hashResumeT);
+    hashResumeT = setTimeout(() => { hashPaused = false; if (hashWorker) hashWorker.postMessage({ pause: false }); }, 800);
+  }
+  let renderQueued = false;
+  grid.addEventListener('scroll', () => {
+    hashYield();
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => { renderQueued = false; libRender(); });
+  }, { passive: true });
+  function libPaintAll() {
+    for (const [k, el] of mounted) {
+      if (k[0] === 'c') { const s = byId.get(k.slice(2)); if (s) paintCard(el, s); }
+    }
+  }
+  function libRepaint(id) {
+    const el = mounted.get('c:' + id);
+    const s = byId.get(id);
+    if (el && s) paintCard(el, s);
+  }
+  function libHeader() {
+    const hid = ALL.reduce((n, s) => n + (ov(s.id).hidden ? 1 : 0), 0);
+    $('libCount').textContent = plural(view.length, 'item') +
+      (hid && libFilter !== 'hidden' ? ` · ${hid.toLocaleString()} hidden` : '') +
+      (selected.size ? ` · ${selected.size.toLocaleString()} selected` : '');
+    const inGroups = dupGroups.reduce((n, g) => n + g.ids.length, 0);
+    $('chipDupes').textContent = hashSt.running ? `${Math.floor(100 * hashSt.done / Math.max(1, hashSt.total))}%` : hashSt.finished ? String(inGroups) : '';
+    $('chipDupes').parentElement.title = hashSt.running ? 'Still comparing thumbnails…' : `${dupGroups.length} groups of near-identical shots (key 7)`;
+    $('chipDates').textContent = String(dateFlags.size);
+    $('libSel').hidden = !selected.size || !$('libPrompt').hidden;
+    $('libSelN').textContent = `${selected.size.toLocaleString()} selected`;
+    $('libKeys').hidden = !$('libPrompt').hidden || selected.size > 0;
+  }
+  // Full rebuild of the view (filter / order / data changed). Keeps the cursor
+  // item — or its old position — and the scroll offset.
+  function libRebuild(opts = {}) {
+    const oldIdx = cursorId != null && posOf.has(cursorId) ? posOf.get(cursorId) : 0;
+    libGeometry();
+    computeView();
+    libLayout();
+    if (!posOf.has(cursorId)) cursorId = view.length ? view[Math.min(oldIdx, view.length - 1)].id : null;
+    for (const el of mounted.values()) el._sig = null; // labels/positions may have changed
+    if (opts.top) grid.scrollTop = 0;
+    if (opts.reveal) libEnsureVisible(cursorId);
+    libHeader();
+    libRender();
+    if ($('libLoupe').classList.contains('open')) loupeShow();
+  }
+  // public name kept for the editor / uploads code paths
+  function renderLibrary() { if (library.classList.contains('open')) libRebuild({ keepCursor: true }); }
+
+  /* --- cursor & selection --- */
+  function libEnsureVisible(id, center) {
+    if (id == null || !posOf.has(id)) return;
+    const row = rows[rowOf[posOf.get(id)]];
+    if (!row) return;
+    const vh = grid.clientHeight, top = grid.scrollTop;
+    const headAbove = rows[rowOf[posOf.get(id)] - 1]?.head ? HEAD_H : 0;
+    if (center) grid.scrollTop = Math.max(0, row.top - vh / 2 + row.h / 2);
+    else if (row.top - headAbove < top + 4) grid.scrollTop = Math.max(0, row.top - headAbove - 8);
+    else if (row.top + row.h > top + vh - 4) grid.scrollTop = row.top + row.h - vh + 12;
+  }
+  function libSetCursor(id, opts = {}) {
+    if (id == null) return;
+    const prev = cursorId;
+    cursorId = id;
+    if (opts.reveal !== false) libEnsureVisible(id, opts.center);
+    if (prev && prev !== id) libRepaint(prev);
+    libRepaint(id);
+    libRender();
+    if ($('libLoupe').classList.contains('open')) loupeShow();
+  }
+  function libMove(delta, extend) {
+    if (!view.length) return;
+    const from = posOf.has(cursorId) ? posOf.get(cursorId) : 0;
+    const to = Math.max(0, Math.min(view.length - 1, from + delta));
+    libGo(to, extend);
+  }
+  function libGo(to, extend) {
+    if (!view.length) return;
+    const from = posOf.has(cursorId) ? posOf.get(cursorId) : 0;
+    if (extend) {
+      if (anchorId == null || !posOf.has(anchorId)) anchorId = view[from].id;
+      const a = posOf.get(anchorId);
+      const old = [...selected];
+      selected.clear();
+      for (let i = Math.min(a, to); i <= Math.max(a, to); i++) selected.add(view[i].id);
+      old.forEach(libRepaint);
+      selected.forEach(libRepaint);
+      libHeader();
+    } else anchorId = null;
+    libSetCursor(view[to].id);
+  }
+  // Up/down: same column in the previous/next row of cards (skipping headers).
+  function libVertical(dir, extend, pages) {
+    if (!view.length) return;
+    const i = posOf.has(cursorId) ? posOf.get(cursorId) : 0;
+    let r = rowOf[i];
+    const col = i - rows[r].start;
+    let steps = pages ? Math.max(1, Math.floor(grid.clientHeight / (geo.ch + GAP)) - 1) : 1;
+    let target = r;
+    while (steps > 0) {
+      let t = target + dir;
+      while (rows[t] && rows[t].head) t += dir;
+      if (!rows[t]) break;
+      target = t; steps--;
+    }
+    if (target === r) { libGo(dir < 0 ? 0 : view.length - 1, extend); return; }
+    libGo(Math.min(rows[target].start + col, rows[target].end - 1), extend);
+  }
+  function setSelection(ids) {
+    const old = [...selected];
+    selected.clear();
+    ids.forEach(id => selected.add(id));
+    old.forEach(libRepaint);
+    selected.forEach(libRepaint);
+    libHeader();
+  }
+  const sectionOf = i => sections.find(sec => i >= sec.start && i < sec.end);
+  function selectSection(sec) {
+    if (!sec) return;
+    setSelection(view.slice(sec.start, sec.end).map(s => s.id));
+    libMsg(`Selected ${plural(sec.end - sec.start, 'item')} — D set date · T shift · X hide`);
+  }
+  function jumpSection(dir) {
+    const i = posOf.has(cursorId) ? posOf.get(cursorId) : 0;
+    const k = sections.indexOf(sectionOf(i));
+    const sec = sections[k + dir] ?? (dir < 0 ? sections[0] : null);
+    if (!sec) return;
+    let target = sec.start;
+    if (libFilter === 'dupes') { const g = groupOf.get(view[sec.start].id); if (g && posOf.has(g.best)) target = posOf.get(g.best); }
+    anchorId = null;
+    libSetCursor(view[target].id);
+  }
+
+  /* --- changes, undo --- */
+  const undoStack = [];
+  function libRecord(changes, label) {
+    undoStack.push({ label, prev: changes.map(c => ({ id: c.id, patch: Object.fromEntries(Object.keys(c.patch).map(k => [k, ov(c.id)[k] ?? null])) })) });
+    if (undoStack.length > 300) undoStack.shift();
+  }
+  function libApply(changes, label, record = true) {
+    changes = changes.filter(c => Object.keys(c.patch).some(k => (ov(c.id)[k] ?? null) !== (c.patch[k] ?? null)));
+    if (!changes.length) return 0;
+    if (record) libRecord(changes, label);
+    let dates = false;
+    for (const c of changes) { setOv(c.id, c.patch); if ('date' in c.patch) dates = true; }
+    rebuildKeeping(cur());
+    if (idx < 0 && list.length) show(0, 1);
+    if (cur() && changes.some(c => c.id === cur().id)) updateCaption(cur());
+    if (dates) libRebuild({ reveal: true }); // re-sorted: follow the cursor to its new place
+    else { changes.forEach(c => libRepaint(c.id)); libHeader(); }
+    if ($('libLoupe').classList.contains('open')) loupeShow();
+    return changes.length;
+  }
+  function libUndo() {
+    const u = undoStack.pop();
+    if (!u) { libMsg('Nothing to undo'); return; }
+    libApply(u.prev, '', false);
+    if (posOf.has(u.prev[0].id)) libSetCursor(u.prev[0].id);
+    libMsg(`Undid: ${u.label}`);
+  }
+  let msgTimer = null;
+  function libMsg(t) {
+    $('libMsg').textContent = t;
+    clearTimeout(msgTimer);
+    msgTimer = setTimeout(() => { $('libMsg').textContent = ''; }, 5000);
+  }
+  // X / P act on the selection when the cursor is inside it, else on the cursor.
+  function libTargets() {
+    if (selected.size && selected.has(cursorId)) return [...selected].filter(id => byId.has(id));
+    return cursorId ? [cursorId] : [];
+  }
+  const libDateTargets = () => (selected.size ? [...selected].filter(id => byId.has(id)) : cursorId ? [cursorId] : []);
+  function libFlag(hide) {
+    const ids = libTargets();
+    if (!ids.length) return;
+    const n = libApply(ids.map(id => ({ id, patch: { hidden: hide ? true : null } })), `${hide ? 'hid' : 'kept'} ${plural(ids.length, 'item')}`);
+    const last = Math.max(...ids.map(id => posOf.get(id) ?? -1));
+    if (ids.length > 1) { setSelection([]); libMsg(`${hide ? 'Hid' : 'Kept'} ${plural(n, 'item')} · ⌘/Ctrl+Z to undo`); }
+    anchorId = null;
+    if (last >= 0) libGo(Math.min(view.length - 1, last + 1));
+  }
+  function libKeepBest() {
+    const g = groupOf.get(cursorId);
+    if (!g) { libMsg('Not part of a look-alike group'); return; }
+    const keepId = cursorId;
+    libApply(g.ids.map(id => ({ id, patch: { hidden: id === keepId ? null : true } })), `kept 1 of ${g.ids.length} look-alikes`);
+    libMsg(`Kept 1, hid ${g.ids.length - 1} · ⌘/Ctrl+Z to undo`);
+    const gi = dupGroups.indexOf(g);
+    const next = dupGroups.slice(gi + 1).find(n => posOf.has(n.best));
+    if (next) libSetCursor(next.best);
+    else { const last = Math.max(...g.ids.map(id => posOf.get(id) ?? -1)); if (last >= 0) libGo(Math.min(view.length - 1, last + 1)); }
+  }
+  // Sets every target to one day, spaced a second apart in their current order so
+  // a scanned batch keeps its sequence.
+  function libSetDates(ids, day) {
+    const order = ids.map(id => byId.get(id)).sort((a, b) => (posOf.get(a.id) ?? 0) - (posOf.get(b.id) ?? 0));
+    const t0 = dParse(day + ' 12:00:00');
+    const changes = order.map((s, i) => ({ id: s.id, patch: { date: dFmt(t0 + i * 1000) } }));
+    return libApply(changes, `set ${plural(ids.length, 'date')} to ${day}`);
+  }
+  function libShiftDates(ids, sh, text) {
+    const changes = [];
+    for (const id of ids) {
+      const s = byId.get(id);
+      const d = applyShift(effDate(s), sh);
+      if (d) changes.push({ id, patch: { date: d === s.d ? null : d } });
+    }
+    return libApply(changes, `shifted ${plural(ids.length, 'date')} by ${text}`);
+  }
+  function libUseSuggested() {
+    const ids = libDateTargets();
+    const changes = [];
+    for (const id of ids) { const f = (dateFlags.get(id) || []).find(x => x.suggest); if (f) changes.push({ id, patch: { date: f.suggest } }); }
+    if (!changes.length) { libMsg('No suggested date here (only for out-of-sequence files)'); return; }
+    const n = libApply(changes, `used suggested dates for ${plural(changes.length, 'item')}`);
+    libMsg(`Applied suggested dates to ${plural(n, 'item')} · ⌘/Ctrl+Z to undo`);
+  }
+
+  /* --- footer prompt: set date / shift / jump --- */
+  let promptMode = null;
+  const promptEl = $('libPrompt'), promptIn = $('libPromptInput');
+  function libPrompt(mode) {
+    const ids = libDateTargets();
+    if (mode !== 'jump' && !ids.length) return;
+    promptMode = mode;
+    const what = ids.length === 1 ? (ids[0].split('/').pop()) : plural(ids.length, 'item');
+    $('libPromptLabel').textContent = mode === 'set' ? `Set date · ${what}` : mode === 'shift' ? `Shift dates · ${what}` : 'Jump to date';
+    $('libPromptHint').textContent = mode === 'set' ? '1994-07-15 · June 1994 · summer 1994 · 1994 — Enter to apply, Esc to cancel'
+      : mode === 'shift' ? '+1y · -3h · +2d 6h · -18mo — Enter to apply'
+      : '2012 · 2012-07 · June 2012 — Enter to go';
+    promptIn.value = '';
+    promptIn.classList.remove('bad');
+    promptEl.hidden = false;
+    libHeader();
+    promptIn.focus();
+  }
+  function closePrompt() {
+    promptMode = null;
+    promptEl.hidden = true;
+    promptIn.blur();
+    grid.focus({ preventScroll: true });
+    libHeader();
+  }
+  function submitPrompt() {
+    const v = promptIn.value.trim();
+    const ids = libDateTargets();
+    if (promptMode === 'set') {
+      const day = parseFuzzyDay(v);
+      if (!day) { promptIn.classList.add('bad'); return; }
+      const n = libSetDates(ids, day);
+      libMsg(`Set ${plural(n, 'date')} to ${day} · ⌘/Ctrl+Z to undo`);
+    } else if (promptMode === 'shift') {
+      const sh = parseShift(v);
+      if (!sh) { promptIn.classList.add('bad'); return; }
+      const n = libShiftDates(ids, sh, v);
+      libMsg(`Shifted ${plural(n, 'date')} by ${v} · ⌘/Ctrl+Z to undo`);
+    } else if (promptMode === 'jump') {
+      const day = /^\d{4}$/.test(v) ? v : /^\d{4}-\d{1,2}$/.test(v) ? v.replace(/-(\d)$/, '-0$1') : parseFuzzyDay(v);
+      if (!day) { promptIn.classList.add('bad'); return; }
+      let i = view.findIndex(s => effDate(s) >= day);
+      if (i < 0) i = view.length - 1;
+      closePrompt();
+      if (i >= 0) { anchorId = null; libSetCursor(view[i].id, { center: true }); }
+      return;
+    }
+    closePrompt();
+  }
+  promptEl.addEventListener('submit', e => { e.preventDefault(); submitPrompt(); });
+  promptIn.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePrompt(); }
+    else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submitPrompt(); }
+    else e.stopPropagation(); // typing never triggers library shortcuts
+  });
+  $('libSel').addEventListener('click', e => {
+    const a = e.target.closest('button')?.dataset.a;
+    if (a === 'date') libPrompt('set');
+    else if (a === 'shift') libPrompt('shift');
+    else if (a === 'hide' || a === 'keep') {
+      const ids = [...selected];
+      const n = libApply(ids.map(id => ({ id, patch: { hidden: a === 'hide' ? true : null } })), `${a === 'hide' ? 'hid' : 'kept'} ${plural(ids.length, 'item')}`);
+      setSelection([]);
+      libMsg(`${a === 'hide' ? 'Hid' : 'Kept'} ${plural(n, 'item')} · ⌘/Ctrl+Z to undo`);
+    } else if (a === 'clear') setSelection([]);
+  });
+
+  /* --- loupe --- */
+  const loupe = $('libLoupe');
+  function loupeShow() {
+    const s = byId.get(cursorId);
+    if (!s) return;
+    const im = $('libLoupeImg');
+    const want = imgSrc(s);
+    if (im.getAttribute('src') !== want) im.src = want;
+    const i = posOf.get(s.id);
+    if (i != null && view[i + 1]) new Image().src = imgSrc(view[i + 1]); // preload the next
+    const o = ov(s.id);
+    const g = groupOf.get(s.id);
+    const fl = dateFlags.get(s.id);
+    loupe.classList.toggle('isHidden', !!o.hidden);
+    $('libLoupeInfo').innerHTML =
+      `<span class="nm">${esc(s.id)}</span><span>${esc(effDate(s).slice(0, 16))}${o.date ? ' &#9998;' : ''}</span>` +
+      (o.hidden ? '<span class="tag">hidden</span>' : '') +
+      (g ? `<span class="grp">look-alike ${g.ids.indexOf(s.id) + 1} of ${g.ids.length}${g.best === s.id ? ' &#9733; sharpest' : ''}</span>` : '') +
+      (fl ? `<span class="tag" title="${esc(fl.map(f => f.label).join('; '))}">date?</span>` : '') +
+      `<span>${(i ?? 0) + 1} / ${view.length.toLocaleString()}</span>` +
+      `<span class="keys"><b>&larr;&rarr;</b> move · <b>X</b> hide · <b>P</b> keep · <b>Enter</b> edit · <b>Space</b>/<b>Esc</b> back</span>`;
+  }
+  function loupeToggle(on) {
+    loupe.classList.toggle('open', on);
+    if (on) loupeShow(); else { $('libLoupeImg').removeAttribute('src'); libEnsureVisible(cursorId); libRender(); }
+  }
+
+  function setLibFilter(f) {
+    if (!LIB_FILTERS.includes(f)) return;
+    libFilter = f;
+    for (const c of $('libFilters').children) c.classList.toggle('on', c.dataset.f === f);
+    const keep = cursorId;
+    libRebuild({ top: true });
+    if (keep && posOf.has(keep)) libSetCursor(keep, { center: true });
+    else if (view.length) {
+      // dupes view: land on the first group's suggested pick
+      const first = libFilter === 'dupes' && dupGroups[0] && posOf.has(dupGroups[0].best) ? dupGroups[0].best : view[0].id;
+      libSetCursor(first);
+    }
+    if (f === 'dupes' && !hashSt.finished) libMsg(hashSt.running ? 'Still comparing thumbnails — groups fill in as it goes' : 'Comparing thumbnails…');
+  }
+
+  // Keyboard map while the library is open (see README → Library).
+  function libKey(e, typing) {
+    if (typing) return;
+    const k = e.key, lower = k.length === 1 ? k.toLowerCase() : k;
+    const mod = e.metaKey || e.ctrlKey;
+    const inLoupe = loupe.classList.contains('open');
+    if (mod && lower === 'z') { e.preventDefault(); libUndo(); return; }
+    if (mod && lower === 'a') { e.preventDefault(); setSelection(view.map(s => s.id)); return; }
+    if (mod || e.altKey) return;
+    const handled = () => e.preventDefault();
+    switch (lower) {
+      case 'Escape':
+        if (inLoupe) loupeToggle(false);
+        else if (selected.size) { setSelection([]); anchorId = null; }
+        else closeLibrary();
+        return handled();
+      case 'l': closeLibrary(); return handled();
+      case 'ArrowRight': libMove(1, e.shiftKey); return handled();
+      case 'ArrowLeft': libMove(-1, e.shiftKey); return handled();
+      case 'ArrowDown': inLoupe ? libMove(1, e.shiftKey) : libVertical(1, e.shiftKey); return handled();
+      case 'ArrowUp': inLoupe ? libMove(-1, e.shiftKey) : libVertical(-1, e.shiftKey); return handled();
+      case 'PageDown': libVertical(1, e.shiftKey, true); return handled();
+      case 'PageUp': libVertical(-1, e.shiftKey, true); return handled();
+      case 'Home': libGo(0, e.shiftKey); return handled();
+      case 'End': libGo(view.length - 1, e.shiftKey); return handled();
+      case 'x': case 'h': case 'Delete': case 'Backspace': libFlag(true); return handled();
+      case 'p': case 'k': libFlag(false); return handled();
+      case ' ': loupeToggle(!inLoupe); return handled();
+      case 'Enter': case 'e': {
+        const s = byId.get(cursorId);
+        if (!s) return handled();
+        if (e.shiftKey && k === 'Enter') { playFrom(s.id); return handled(); }
+        openEditor(s);
+        return handled();
+      }
+      case 'g': libKeepBest(); return handled();
+      case 's': selectSection(sectionOf(posOf.get(cursorId) ?? 0)); return handled();
+      case 'd': libPrompt('set'); return handled();
+      case 't': libPrompt('shift'); return handled();
+      case 'j': libPrompt('jump'); return handled();
+      case 'm': libUseSuggested(); return handled();
+      case ']': jumpSection(1); return handled();
+      case '[': jumpSection(-1); return handled();
+      case '-': case '=': case '+': {
+        const z = Math.max(0, Math.min(ZOOMS.length - 1, zoom + (lower === '-' ? -1 : 1)));
+        if (z !== zoom) { zoom = z; lsSet('slideshow.libZoom', String(z)); libRebuild({ reveal: true }); }
+        return handled();
+      }
+    }
+    if (/^[1-8]$/.test(k)) { setLibFilter(LIB_FILTERS[+k - 1]); return handled(); }
+  }
+
+  function playFrom(id) {
+    if (ov(id).hidden) { setOv(id, { hidden: null }); rebuildKeeping(cur()); } // playing a hidden item restores it
+    const t = list.findIndex(s => s.id === id);
+    if (t >= 0) { closeLibrary(); show(t, 1); }
+  }
+
+  let libResizeQueued = false;
+  new ResizeObserver(() => {
+    if (!library.classList.contains('open') || libResizeQueued) return;
+    libResizeQueued = true;
+    requestAnimationFrame(() => {
+      libResizeQueued = false;
+      const cols = geo.cols;
+      libGeometry();
+      if (geo.cols !== cols) { libRebuild({ reveal: true }); return; } // sections depend on the column count
+      libLayout();
+      for (const el of mounted.values()) el._tf = null;
+      libRender();
+    });
+  }).observe(grid);
+
+  // test/automation hook (read-only views + a way to await pending writes)
+  window.__lib = {
+    cursor: () => cursorId,
+    selected: () => [...selected],
+    order: () => view.map(s => s.id),
+    stats: () => ({ total: hashSt.total, hashed: hashSt.done, hashDone: hashSt.finished, regroupMs: hashSt.regroupMs, groups: dupGroups.length, flagged: dateFlags.size, mounted: mounted.size }),
+    groups: () => dupGroups.map(g => ({ ids: [...g.ids], best: g.best })),
+    groupOf: id => { const g = groupOf.get(id); return g ? { ids: [...g.ids], best: g.best } : null; },
+    flags: () => Object.fromEntries([...dateFlags].map(([id, f]) => [id, f.map(x => x.r)])),
+    flush: () => flushOverrides(),
+  };
 
   // Global show settings (stored in slideshow.db) — birthday for age captions
   // plus appearance. Rendered into the gear panel's "Look" tab.
@@ -1865,8 +3009,24 @@
     const overlay = library.classList.contains('open') || editModal.classList.contains('open');
     document.body.classList.toggle('overlay', overlay);
   }
-  function openLibrary() { renderLibrary(); library.classList.add('open'); togglePanel(false); syncChrome(); schedule(); }
-  function closeLibrary() { library.classList.remove('open'); syncChrome(); schedule(); }
+  function openLibrary() {
+    library.classList.add('open');
+    togglePanel(false);
+    syncChrome();
+    schedule();
+    // start where the show is, the first time
+    if (cursorId == null && cur()) cursorId = cur().id;
+    libRebuild({ reveal: true });
+    grid.focus({ preventScroll: true });
+    setTimeout(() => { if (library.classList.contains('open')) startHashing(); }, 400);
+  }
+  function closeLibrary() {
+    if (loupe.classList.contains('open')) loupeToggle(false);
+    if (!promptEl.hidden) closePrompt();
+    library.classList.remove('open');
+    syncChrome();
+    schedule();
+  }
 
   $('libBtn').addEventListener('click', openLibrary);
   $('libClose').addEventListener('click', closeLibrary);
@@ -1875,32 +3035,41 @@
   $('libFilters').addEventListener('click', e => {
     const b = e.target.closest('button');
     if (!b) return;
-    libFilter = b.dataset.f;
-    for (const c of $('libFilters').children) c.classList.toggle('on', c === b);
-    renderLibrary();
+    setLibFilter(b.dataset.f);
+    grid.focus({ preventScroll: true }); // keys keep driving the grid, not the chip
   });
 
-  $('libGrid').addEventListener('click', e => {
-    const hideBtn = e.target.closest('.libHide');
-    if (hideBtn) {
-      const id = hideBtn.dataset.id;
-      setOv(id, { hidden: ov(id).hidden ? null : true });
-      rebuildKeeping(cur());
-      if (idx < 0 && list.length) show(0, 1);
-      renderLibrary();
-      return;
-    }
-    const playBtn = e.target.closest('.libPlay');
-    if (playBtn) {
-      const id = playBtn.dataset.id;
-      if (ov(id).hidden) { setOv(id, { hidden: null }); rebuildKeeping(cur()); } // playing a hidden item restores it
-      const t = list.findIndex(s => s.id === id);
-      if (t >= 0) { closeLibrary(); show(t, 1); }
+  grid.addEventListener('click', e => {
+    const head = e.target.closest('.libSec');
+    if (head) {
+      if (e.target.closest('[data-a="selsec"]')) selectSection(sections.find(x => x.key === head.dataset.sec));
       return;
     }
     const card = e.target.closest('.libCard');
     if (!card) return;
-    const slide = ALL.find(s => s.id === card.dataset.id);
+    const id = card.dataset.id;
+    if (e.target.closest('.libHide')) {
+      const hid = !!ov(id).hidden;
+      libApply([{ id, patch: { hidden: hid ? null : true } }], hid ? 'kept 1 item' : 'hid 1 item');
+      return;
+    }
+    if (e.target.closest('.libPlay')) { playFrom(id); return; }
+    if (e.shiftKey && posOf.has(id)) { // range-select from the anchor (or cursor)
+      const a = posOf.get(anchorId ?? cursorId) ?? posOf.get(id), b2 = posOf.get(id);
+      if (anchorId == null) anchorId = cursorId ?? id;
+      setSelection(view.slice(Math.min(a, b2), Math.max(a, b2) + 1).map(s2 => s2.id));
+      libSetCursor(id, { reveal: false });
+      return;
+    }
+    if (e.metaKey || e.ctrlKey) { // toggle one
+      const next = new Set(selected);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      setSelection([...next]);
+      anchorId = id;
+      libSetCursor(id, { reveal: false });
+      return;
+    }
+    const slide = byId.get(id);
     if (slide) openEditor(slide); // default action: edit
   });
 
@@ -1946,13 +3115,17 @@
     if (e.target instanceof Element && e.target.closest('#panel')) return; // typing/adjusting in the panel
     if (editModal.classList.contains('open')) {
       if (e.key === 'Escape') closeEditor();
+      else if (!typing && library.classList.contains('open') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+               !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        // walk the library without closing the editor
+        e.preventDefault();
+        libMove(e.key === 'ArrowRight' ? 1 : -1);
+        const s = byId.get(cursorId);
+        if (s) openEditor(s);
+      }
       return;
     }
-    if (library.classList.contains('open')) {
-      if (e.key === 'Escape') closeLibrary();
-      else if ((e.key === 'l' || e.key === 'L') && !typing) closeLibrary();
-      return;
-    }
+    if (library.classList.contains('open')) { libKey(e, typing); return; }
     if (typing) return; // don't let shortcuts fire while editing a field
     if (e.key === 'ArrowRight') advance(1);
     else if (e.key === 'ArrowLeft') advance(-1);
