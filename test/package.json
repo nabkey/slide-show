@@ -1,0 +1,13 @@
+{
+  "name": "slideshow-reliability-tests",
+  "private": true,
+  "description": "Dev-only soak + chaos harness. The app itself has zero dependencies.",
+  "scripts": {
+    "soak": "node soak.mjs",
+    "soak:quick": "node soak.mjs --transitions 300 --every 15",
+    "chaos": "node chaos.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}
