@@ -135,8 +135,9 @@ const thumbLimit = limiter(CORES);
 
 // ---------- database ----------
 
+// (Default rollback journal, not WAL: the README tells people to copy
+// slideshow.db on its own, which must always hold every edit.)
 const db = new Database(path.join(ROOT, 'slideshow.db'));
-try { db.run('PRAGMA journal_mode = WAL'); db.run('PRAGMA synchronous = NORMAL'); } catch {}
 db.run(`CREATE TABLE IF NOT EXISTS exif_cache (
   path TEXT PRIMARY KEY,
   sig  TEXT NOT NULL,

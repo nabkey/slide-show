@@ -87,7 +87,9 @@ describe('ground-truth fixtures (primary path)', () => {
   });
 
   test('every dated fixture resolves to its ground-truth date', () => {
-    const dated = fixtures.filter(f => f.expect);
+    // Without exiftool (not the primary target) HEIC/XMP dates can't be read off macOS.
+    if (!tools.exiftool) console.log('exiftool missing: HEIC/XMP-only fixtures are not date-checked');
+    const dated = fixtures.filter(f => f.expect && (tools.exiftool || !f.exiftoolOnly));
     const rows = dated.map(f => ({ f, err: check(f, slideOf(f.file)) }));
     for (const { f, err } of rows) {
       const s = slideOf(f.file);
@@ -126,7 +128,7 @@ describe('ground-truth fixtures (primary path)', () => {
     const ds = data.slides.map((s: any) => s.d);
     expect(ds).toEqual([...ds].sort());
     // and the ground truth agrees with that order wherever it is minute-precise
-    const timed = fixtures.filter(f => f.expect?.length === 16).sort((a, b) => (a.expect! < b.expect! ? -1 : 1));
+    const timed = fixtures.filter(f => f.expect?.length === 16 && (tools.exiftool || !f.exiftoolOnly)).sort((a, b) => (a.expect! < b.expect! ? -1 : 1));
     const idx = timed.map(f => data.slides.findIndex((s: any) => s.id === f.file));
     expect(idx).toEqual([...idx].sort((a, b) => a - b));
   });
