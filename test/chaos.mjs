@@ -438,6 +438,31 @@ scenarios['rapid-skip'] = {
   },
 };
 
+scenarios['overlay-left-open'] = {
+  fault: 'Someone opens the Library (which holds the show) and walks away',
+  expect: 'After the idle timeout the overlay closes itself and the show resumes (timeout shortened to 4 s for the test)',
+  async run() {
+    const patch = body => {
+      const out = body.replace('const IDLE_TIDY_MS = 5 * 60 * 1000;', 'const IDLE_TIDY_MS = 4000;');
+      if (out === body) throw new Error('overlay-left-open: IDLE_TIDY_MS not found');
+      return out;
+    };
+    const { server, show } = await boot({ patch });
+    try {
+      await waitTransitions(show, 2, 20000);
+      const marker = (await show.probe()).marker;
+      await show.page.keyboard.press('l');
+      const opened = await show.page.evaluate(() => document.getElementById('library').classList.contains('open'));
+      const held = !(await waitTransitions(show, 1, 3000));
+      const t0 = Date.now();
+      const closed = await waitFor(() => show.page.evaluate(() => !document.getElementById('library').classList.contains('open')), 15000);
+      const resumeMs = await timeToNextTransition(show, t0, 15000);
+      const h = await healthy(show, marker);
+      return { ok: opened && held && !!closed && resumeMs != null && h.ok, detail: `library opened: ${opened}; show held while open: ${held}; auto-closed: ${!!closed}; show resumed ${resumeMs == null ? 'never' : (resumeMs / 1000).toFixed(1) + ' s'} later; ${h.problems.join('; ') || 'clean'}` };
+    } finally { await show.close(); await server.cleanup(); }
+  },
+};
+
 scenarios['security'] = {
   fault: 'Path traversal, DNS rebinding (foreign Host), CSRF from another origin (incl. a real browser page), bad JSON, malformed URLs',
   expect: 'Nothing outside the folder is served; foreign Host/Origin get 403; no state changes; server stays up',
