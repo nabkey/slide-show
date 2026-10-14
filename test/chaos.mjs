@@ -348,7 +348,7 @@ scenarios['exception-in-loop'] = {
   fault: 'A JS exception is thrown inside the slide-advance path (injected once)',
   expect: 'Error is logged; watchdog notices the stalled timer and the show self-heals without a reload',
   async run() {
-    const anchor = /(\n\s*)maybeRenderSlideTab\(\);(\s*\n\s*preload\()/;
+    const anchor = /(\n\s*)maybeRenderSlideTab\(\);(\s*\n\s*schedule\(\);)/;
     const patch = body => {
       if (!anchor.test(body)) throw new Error('exception-in-loop: anchor not found in index.html');
       return body.replace(anchor, `$1if (window.__boom) { window.__boom = false; throw new Error('injected fault'); }$1maybeRenderSlideTab();$2`);

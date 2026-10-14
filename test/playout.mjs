@@ -172,7 +172,7 @@ async function pass(screencast) {
   const showDir = mkdtempSync(path.join(tmpdir(), 'slideshow-show-'));
   const port = 20000 + Math.floor(Math.random() * 20000);
   writeFileSync(path.join(showDir, 'server.ts'),
-    readFileSync(path.join(REPO, 'server.ts'), 'utf8').replace(/const PORT = \d+;/, `const PORT = ${port};`));
+    readFileSync(path.join(REPO, 'server.ts'), 'utf8').replace(/const PORT = [^\n]*;/, `const PORT = ${port};`));
   copyFileSync(HTML, path.join(showDir, 'index.html'));
   for (const it of items) {
     for (const f of [it.id, it.live].filter(Boolean)) {

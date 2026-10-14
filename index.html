@@ -1806,7 +1806,10 @@ window.addEventListener('unhandledrejection', e => logFault('unhandled rejection
       await cut(e.result, dir, mySeq);
       return;
     }
-    schedule(); // nothing playable right now: keep what's up and try again later
+    // nothing playable right now: keep what's up and try again later. When every
+    // slide failed it's an outage, not the files, so give them all another go.
+    failed.clear();
+    schedule();
   }
 
   async function cut(r, dir, mySeq) {

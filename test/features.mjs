@@ -9,7 +9,7 @@
 // a viewport resize (as when going fullscreen), and skipping a broken file.
 
 import { spawn } from 'node:child_process';
-import { copyFileSync, linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, linkSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +29,7 @@ const items = all.slice(0, 40); // has photos of every shape, clips, a Live Phot
 const dir = mkdtempSync(path.join(tmpdir(), 'slideshow-feat-'));
 const port = 20000 + Math.floor(Math.random() * 20000);
 writeFileSync(path.join(dir, 'server.ts'),
-  readFileSync(path.join(REPO, 'server.ts'), 'utf8').replace(/const PORT = \d+;/, `const PORT = ${port};`));
+  readFileSync(path.join(REPO, 'server.ts'), 'utf8').replace(/const PORT = [^\n]*;/, `const PORT = ${port};`));
 copyFileSync(HTML, path.join(dir, 'index.html'));
 for (const it of items) for (const f of [it.id, it.live].filter(Boolean)) {
   try { linkSync(path.join(FIXTURES, f), path.join(dir, f)); } catch { copyFileSync(path.join(FIXTURES, f), path.join(dir, f)); }
@@ -175,8 +175,10 @@ await page.click('#segCap button[data-v="date"]');
 await page.click('#segMedia button[data-v="video"]');
 await closePanel();
 await page.keyboard.press('l');
+// the library grid is virtualized: narrow it to videos so the clip's card is mounted
+await page.click('#libFilters [data-f="videos"]');
 await page.hover(`.libCard[data-id="${order[vidIdx]}"]`);
-await page.click(`.libPlay[data-id="${order[vidIdx]}"]`);
+await page.click(`.libCard[data-id="${order[vidIdx]}"] .libPlay`);
 check('library play-from-here', await waitIdx(vidIdx, 4000), await counter());
 await page.waitForTimeout(400);
 st = await stage();
@@ -188,10 +190,16 @@ check('Fit to slide rate = trimmed length / duration', st.video && Math.abs(st.v
 check('clip starts at its trim start', st.video && st.video.t >= 0.95 && st.video.t < 3.05, `t=${st.video && st.video.t.toFixed(2)}`);
 
 // a broken file in the middle: the show passes it without showing it
-const badIdx = order.findIndex(id => items.find(it => it.id === id)?.bad);
+// (the server already drops files that are broken at scan time, so break one
+// after the scan: the stage has to cope with it on its own)
+const badIdx = order.findIndex((id, i) => i > vidIdx + 2 && i < order.length - 2 && /\.jpe?g$/i.test(id));
+unlinkSync(path.join(dir, order[badIdx])); // it may be a hard link into the shared fixtures
+writeFileSync(path.join(dir, order[badIdx]), 'this is not a jpeg');
 await page.keyboard.press('l');
+await page.click('#libFilters [data-f="all"]');
+await page.evaluate(id => document.querySelector(`.libCard[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center' }), order[badIdx - 1]);
 await page.hover(`.libCard[data-id="${order[badIdx - 1]}"]`);
-await page.click(`.libPlay[data-id="${order[badIdx - 1]}"]`);
+await page.click(`.libCard[data-id="${order[badIdx - 1]}"] .libPlay`);
 await waitIdx(badIdx - 1, 4000);
 const t0 = Date.now();
 const passed = await waitIdx(badIdx + 1, 9000);
